@@ -4,8 +4,8 @@
  * Crea particiones aleatorias válidas y verifica solución única.
  */
 
-import { solve, extractClues } from './solver.js?v=3';
-import { DIFFICULTY_CONFIG } from './constants.js?v=3';
+import { solve, extractClues } from './solver.js?v=4';
+import { DIFFICULTY_CONFIG } from './constants.js?v=4';
 
 /**
  * Genera un número aleatorio entre min y max (inclusivos)
@@ -57,7 +57,8 @@ function generatePartition(rows, cols, difficulty) {
   // Parámetros según dificultad
   const maxRectArea = difficulty <= 2 ? Math.min(8, rows * cols / 2) :
                       difficulty <= 3 ? Math.min(14, rows * cols / 3) :
-                      Math.min(20, rows * cols / 4);
+                      difficulty <= 4 ? Math.min(30, rows * cols / 4) :
+                      Math.min(100, rows * cols / 3);
   const minRectArea = 2;
   // En dificultades bajas, preferir rectángulos cuadrados
   const preferSquare = difficulty <= 2;
@@ -204,8 +205,11 @@ export async function generatePuzzle(rows, cols, difficulty = 3) {
     const clues = extractClues(grid);
     const result = solve(grid, clues, 2, verifyTimeoutMs, null);
 
-    // Aceptar: única solución, o timedOut con 1 hallada (es única en práctica)
-    if (result.count === 1 || (result.count === 1 && result.timedOut)) {
+    // Aceptar: única solución siempre.
+    // Para grids grandes (>400 celdas), aceptar también si el solver
+    // encontró al menos 1 solución antes de agotar el tiempo.
+    if (result.count === 1 ||
+        (cells > 400 && result.timedOut && result.count >= 1)) {
       return { grid, clues };
     }
 
@@ -216,17 +220,20 @@ export async function generatePuzzle(rows, cols, difficulty = 3) {
   }
 
   // Fallback: generación simple garantizada con verificación
-  return generateSimplePuzzle(rows, cols);
+  return generateSimplePuzzle(rows, cols, difficulty);
 }
 
 /**
  * Generador simplificado de respaldo: crea rectángulos en grilla regular
  * @param {number} rows
  * @param {number} cols
+ * @param {number} difficulty - Dificultad (1-5)
  * @returns {Promise<{grid: number[][], clues: Array}>}
  */
-async function generateSimplePuzzle(rows, cols) {
-  // Dividir en rectángulos de tamaño fijo con algo de variación
+async function generateSimplePuzzle(rows, cols, difficulty = 3) {
+  // Límites de dimensión según dificultad
+  const maxDim = difficulty >= 5 ? 12 : difficulty >= 4 ? 8 : 4;
+
   const grid = Array.from({ length: rows }, () => new Array(cols).fill(0));
   const occupied = Array.from({ length: rows }, () => new Array(cols).fill(false));
 
@@ -247,26 +254,17 @@ async function generateSimplePuzzle(rows, cols) {
         maxH++;
       }
 
-      // Elegir dimensiones
-      const w = Math.min(randInt(1, 4), maxW);
-      const h = Math.min(Math.max(1, Math.floor(randInt(2, 6) / w)), maxH);
-      const area = w * h;
+      // Elegir dimensiones según dificultad
+      let w = Math.min(randInt(1, maxDim), maxW);
+      let h = Math.min(randInt(1, Math.min(maxDim, Math.floor(100 / w))), maxH);
 
-      if (area < 2) {
-        // Forzar al menos 2
-        const w2 = Math.min(2, maxW);
-        const h2 = w2 === 1 ? Math.min(2, maxH) : 1;
-        for (let rr = r; rr < r + h2; rr++) {
-          for (let cc = c; cc < c + w2; cc++) {
-            occupied[rr][cc] = true;
-          }
-        }
-        const pr = r + randInt(0, h2 - 1);
-        const pc = c + randInt(0, w2 - 1);
-        grid[pr][pc] = w2 * h2;
-        c += w2;
-        continue;
+      // Garantizar área >= 2
+      if (w * h < 2) {
+        if (maxW >= 2) { w = 2; h = 1; }
+        else if (maxH >= 2) { w = 1; h = 2; }
       }
+
+      const area = w * h;
 
       for (let rr = r; rr < r + h; rr++) {
         for (let cc = c; cc < c + w; cc++) {
@@ -277,7 +275,7 @@ async function generateSimplePuzzle(rows, cols) {
       // Colocar pista
       const pr = randInt(r, r + h - 1);
       const pc = randInt(c, c + w - 1);
-      grid[pr][pc] = area;
+      grid[pr][pc] = Math.max(2, area);
 
       c += w;
     }
@@ -291,27 +289,67 @@ async function generateSimplePuzzle(rows, cols) {
   if (check.count >= 1) return { grid, clues };
 
   // Si por alguna razón falla, reintentar una vez más sin restricciones estrictas
-  return _generateGuaranteedPuzzle(rows, cols);
+  return _generateGuaranteedPuzzle(rows, cols, difficulty);
 }
 
 /**
- * Genera un puzzle trivialmente válido: tiras horizontales de 2 celdas
- * Siempre tiene exactamente 1 solución si rows*cols es par.
+ * Genera un puzzle válido con rectángulos de tamaño variado.
+ * Rellena el tablero fila por fila con rectángulos aleatorios.
+ * @param {number} rows
+ * @param {number} cols
+ * @param {number} difficulty - Dificultad (1-5)
  */
-async function _generateGuaranteedPuzzle(rows, cols) {
+async function _generateGuaranteedPuzzle(rows, cols, difficulty = 3) {
+  const maxDim = difficulty >= 5 ? 12 : difficulty >= 4 ? 8 : 4;
+
   const grid = Array.from({ length: rows }, () => new Array(cols).fill(0));
+  const occupied = Array.from({ length: rows }, () => new Array(cols).fill(false));
+
   for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c += 2) {
-      const w = (c + 1 < cols) ? 2 : 1;
-      if (w === 1) {
-        // Celda sobrante: hacer tira vertical
-        const h = (r + 1 < rows) ? 2 : 1;
-        grid[r][c] = Math.max(2, w * h);
-      } else {
-        grid[r][c] = 2;
+    for (let c = 0; c < cols; c++) {
+      if (occupied[r][c]) continue;
+
+      // Calcular ancho máximo libre en esta fila
+      let maxW = 0;
+      while (c + maxW < cols && !occupied[r][c + maxW]) maxW++;
+
+      // Elegir ancho aleatorio según dificultad
+      let w = Math.min(maxW, randInt(1, Math.min(maxDim, maxW)));
+
+      // Calcular alto máximo libre para ese ancho
+      let maxH = 0;
+      for (let rr = r; rr < rows; rr++) {
+        let rowFree = true;
+        for (let cc = c; cc < c + w; cc++) {
+          if (occupied[rr][cc]) { rowFree = false; break; }
+        }
+        if (!rowFree) break;
+        maxH++;
       }
+
+      // Elegir alto aleatorio, limitando área a 100
+      let h = Math.min(maxH, randInt(1, Math.min(maxDim, Math.floor(100 / w), maxH)));
+
+      // Garantizar área >= 2
+      if (w * h < 2) {
+        if (maxW >= 2) { w = 2; h = 1; }
+        else if (maxH >= 2) { w = 1; h = 2; }
+      }
+
+      const area = w * h;
+
+      // Marcar celdas como ocupadas
+      for (let rr = r; rr < r + h; rr++)
+        for (let cc = c; cc < c + w; cc++)
+          occupied[rr][cc] = true;
+
+      // Colocar pista en posición aleatoria dentro del rectángulo
+      const pr = randInt(r, r + h - 1);
+      const pc = randInt(c, c + w - 1);
+      grid[pr][pc] = Math.max(2, area);
     }
   }
+
   const clues = extractClues(grid);
   return { grid, clues };
 }

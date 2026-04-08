@@ -3,10 +3,10 @@
  * @description Navegación entre pantallas, eventos globales, tabs y lógica de UI.
  */
 
-import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=3';
-import { Board } from './board.js?v=3';
-import { getSizeForLevel, generatePuzzle } from './generator.js?v=3';
-import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=3';
+import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=4';
+import { Board } from './board.js?v=4';
+import { getSizeForLevel, generatePuzzle } from './generator.js?v=4';
+import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=4';
 
 /** Estado global de la aplicación */
 const state = {
@@ -678,7 +678,7 @@ async function _startGame(difficulty, level) {
   // Limpiar sessionStorage para que se inicie limpio
   sessionStorage.removeItem('shikaku_game_state');
 
-  _showGameScreen(grid, state.currentClues, config);
+  _showGameScreen(grid, state.currentClues, { ...config, level });
 }
 
 function _startGameWithGrid(grid) {
@@ -689,8 +689,8 @@ function _startGameWithGrid(grid) {
   // Limpiar estado guardado para que siempre empiece desde cero
   sessionStorage.removeItem('shikaku_game_state');
   const config = state.activeDifficulty
-    ? DIFFICULTY_CONFIG[state.activeDifficulty - 1]
-    : { id: 3, name: 'Personalizado', color: '#FAC775', textColor: '#633806', darkColor: '#7a4508' };
+    ? { ...DIFFICULTY_CONFIG[state.activeDifficulty - 1], level: state.activeLevel }
+    : { id: 3, name: 'Personalizado', color: '#FAC775', textColor: '#633806', darkColor: '#7a4508', level: null };
   _showGameScreen(grid, clues, config);
 }
 
@@ -717,7 +717,7 @@ function _showGameScreen(grid, clues, config) {
       <button class="header-btn" id="btn-restart" title="Reiniciar">${ICONS.RESTART}</button>
       <button class="header-btn" id="btn-hint" title="Pista">${ICONS.HINT}</button>
       <button class="header-btn btn-solve" id="btn-solve">${ICONS.PLAY}<span class="btn-text">Resolver</span></button>
-      <div class="header-sep"></div>
+      <span class="info-level" id="level-label"><span class="level-full">${config.name}${config.level ? ' · Nivel ' + config.level : ''}</span><span class="level-short">${config.name ? config.name[0] : ''}${config.level ? ' - Nivel ' + config.level : ''}</span></span>
       <div class="header-info">
         <span class="info-icon">&#x23F1;</span><span class="info-val" id="timer-display">00:00</span>
       </div>
@@ -970,7 +970,7 @@ function _solveInWorker(grid, clues) {
     state.solverWorker.postMessage({
       type: 'SOLVE', grid, clues,
       maxSolutions: SOLVER_CONFIG.maxSolutions,
-      timeoutMs: SOLVER_CONFIG.timeoutMs
+      timeoutMs: SOLVER_CONFIG.workerTimeoutMs
     });
   });
 }

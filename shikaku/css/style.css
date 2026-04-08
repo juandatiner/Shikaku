@@ -513,10 +513,11 @@ body {
   align-items: center;
   gap: 3px;
   padding: 4px 8px;
-  font-size: 13px;
+  font-size: 15px;
   cursor: pointer;
   border-radius: 6px;
   transition: background 0.15s;
+  margin-left: auto;
 }
 
 .header-info:hover {
@@ -529,6 +530,22 @@ body {
 
 .info-val {
   font-weight: 600;
+}
+
+.info-level {
+  flex: 1;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.level-short {
+  display: none;
 }
 
 .timer-red {
@@ -1387,11 +1404,19 @@ body {
   .game-header {
     height: 48px;
     padding: 0 4px;
-    gap: 2px;
+    gap: 3px;
   }
 
   .btn-text {
     display: none;
+  }
+
+  .level-full {
+    display: none;
+  }
+
+  .level-short {
+    display: inline;
   }
 
   .header-btn {

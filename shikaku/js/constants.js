@@ -40,6 +40,7 @@ export const REGION_TEXT_COLORS = [
 export const SOLVER_CONFIG = {
   maxSolutions: Infinity,
   timeoutMs: 15000,
+  workerTimeoutMs: 600000,
   progressEvery: 50000,
 };
 

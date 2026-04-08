@@ -230,8 +230,10 @@ export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, o
   // soluciones. El contador sigue hasta maxSolutions o timeout.
 
   const MAX_STORED = 10;
+  const MAX_SEEN_KEYS = 500000; // límite de memoria para deduplicación del conteo
   const stored = [];    // soluciones almacenadas (máximo MAX_STORED)
-  let totalCount = 0;   // contador real sin límite (hasta maxSolutions)
+  let totalCount = 0;   // contador de soluciones únicas
+  const seenKeys = new Set(); // claves canónicas para deduplicación
   const partial = [];
   let timedOut = false;
   let nodesExplored = 0;
@@ -274,6 +276,12 @@ export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, o
 
     // ¿Todas las columnas cubiertas? → solución encontrada
     if (R[0] === 0) {
+      // Deduplicar: crear clave canónica con los rectángulos de esta solución
+      if (seenKeys.size < MAX_SEEN_KEYS) {
+        const key = partial.slice().sort((a, b) => a - b).join(',');
+        if (seenKeys.has(key)) return; // solución duplicada, saltar
+        seenKeys.add(key);
+      }
       totalCount++;
       if (stored.length < MAX_STORED) {
         stored.push(partial.slice());
@@ -314,7 +322,7 @@ export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, o
   search();
 
   // ── Mapear soluciones almacenadas al formato esperado ──
-  const mappedSolutions = stored.map(rowIndices =>
+  const rawMapped = stored.map(rowIndices =>
     rowIndices.map(ri => {
       const { clueIdx, candIdx } = rowMap[ri];
       return {
@@ -324,7 +332,24 @@ export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, o
     })
   );
 
-  return _result(mappedSolutions, totalCount, timedOut, t0, nodesExplored);
+  // Deduplicar soluciones por geometría de rectángulos
+  const mappedSolutions = [];
+  const geomKeys = new Set();
+  for (const sol of rawMapped) {
+    const key = sol.map(s => `${s.rect.r0},${s.rect.c0},${s.rect.w},${s.rect.h}`)
+      .sort().join('|');
+    if (!geomKeys.has(key)) {
+      geomKeys.add(key);
+      mappedSolutions.push(sol);
+    }
+  }
+
+  // Ajustar conteo si se eliminaron duplicados de las almacenadas
+  const dedupedCount = rawMapped.length > 0 && mappedSolutions.length < rawMapped.length
+    ? Math.max(mappedSolutions.length, Math.round(totalCount * mappedSolutions.length / rawMapped.length))
+    : totalCount;
+
+  return _result(mappedSolutions, dedupedCount, timedOut, t0, nodesExplored);
 }
 
 // ═══════════════════════════════════════════════════════
