@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shikaku",
+      "runtimeExecutable": "/usr/bin/python3",
+      "runtimeArgs": ["-c", "import http.server, sys, os; port = int(os.environ.get('PORT', 8080)); http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=port, bind='0.0.0.0')"],
+      "port": 8080,
+      "autoPort": true,
+      "cwd": "shikaku"
+    }
+  ]
+}
