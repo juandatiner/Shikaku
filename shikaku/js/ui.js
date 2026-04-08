@@ -3,10 +3,10 @@
  * @description Navegación entre pantallas, eventos globales, tabs y lógica de UI.
  */
 
-import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=4';
-import { Board } from './board.js?v=4';
-import { getSizeForLevel, generatePuzzle } from './generator.js?v=4';
-import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=4';
+import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=5';
+import { Board } from './board.js?v=5';
+import { getSizeForLevel, generatePuzzle } from './generator.js?v=5';
+import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=5';
 
 /** Estado global de la aplicación */
 const state = {
