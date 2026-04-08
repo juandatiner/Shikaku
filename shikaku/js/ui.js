@@ -713,13 +713,17 @@ function _showGameScreen(grid, clues, config) {
 
   gameScreen.innerHTML = `
     <div id="game-header" class="game-header" style="background:${config.darkColor || '#333'}">
-      <button class="header-btn" id="btn-back" title="Volver">${ICONS.BACK}</button>
-      <button class="header-btn" id="btn-restart" title="Reiniciar">${ICONS.RESTART}</button>
-      <button class="header-btn" id="btn-hint" title="Pista">${ICONS.HINT}</button>
-      <button class="header-btn btn-solve" id="btn-solve">${ICONS.PLAY}<span class="btn-text">Resolver</span></button>
+      <div class="header-left">
+        <button class="header-btn" id="btn-back" title="Volver">${ICONS.BACK}</button>
+        <button class="header-btn" id="btn-restart" title="Reiniciar">${ICONS.RESTART}</button>
+        <button class="header-btn" id="btn-hint" title="Pista">${ICONS.HINT}</button>
+        <button class="header-btn btn-solve" id="btn-solve">${ICONS.PLAY}<span class="btn-text">Resolver</span></button>
+      </div>
       <span class="info-level" id="level-label"><span class="level-full">${config.name}${config.level ? ' · Nivel ' + config.level : ''}</span><span class="level-short">${config.name ? config.name[0] : ''}${config.level ? ' - Nivel ' + config.level : ''}</span></span>
-      <div class="header-info">
-        <span class="info-icon">&#x23F1;</span><span class="info-val" id="timer-display">00:00</span>
+      <div class="header-right">
+        <div class="header-info">
+          <span class="info-icon">&#x23F1;</span><span class="info-val" id="timer-display">00:00</span>
+        </div>
       </div>
     </div>
     <div id="step-bar" class="step-bar" style="display:none;background:${config.color || '#eee'}"></div>

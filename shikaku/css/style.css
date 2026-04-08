@@ -517,7 +517,6 @@ body {
   cursor: pointer;
   border-radius: 6px;
   transition: background 0.15s;
-  margin-left: auto;
 }
 
 .header-info:hover {
@@ -532,16 +531,27 @@ body {
   font-weight: 600;
 }
 
-.info-level {
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex: 1;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1;
+}
+
+.info-level {
+  flex: 0 0 auto;
   text-align: center;
   font-size: 14px;
   font-weight: 500;
   opacity: 0.85;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 
 .level-short {
