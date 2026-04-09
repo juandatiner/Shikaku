@@ -3,10 +3,10 @@
  * @description Navegación entre pantallas, eventos globales, tabs y lógica de UI.
  */
 
-import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=14';
-import { Board } from './board.js?v=14';
-import { getSizeForLevel, generatePuzzle } from './generator.js?v=14';
-import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=14';
+import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=29';
+import { Board } from './board.js?v=29';
+import { getSizeForLevel, generatePuzzle } from './generator.js?v=29';
+import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=29';
 
 /** Estado global de la aplicación */
 const state = {
@@ -367,15 +367,41 @@ function _renderHomeScreen() {
   _bindCreateEvents();
   _bindUploadEvents();
   _bindExportEvents();
+  _bindCompeteEvents();
   _bindLibraryEvents();
 }
 
 function _renderCompeteTab() {
   return `
-    <div class="compete-panel" style="max-width:560px;margin:0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;text-align:center;color:#999;">
-      <div style="font-size:48px;margin-bottom:16px;">🏆</div>
-      <h2 style="color:#555;margin:0 0 8px;">Competir</h2>
-      <p style="font-size:14px;">Próximamente</p>
+    <div class="upload-panel">
+      <div class="upload-format-collapse" style="display:flex; gap:8px; align-items:flex-start;">
+        <details style="flex:1; min-width:0;">
+          <summary>Formato .txt</summary>
+          <div class="code-block">
+            <p>[ANCHO] [ALTO]</p>
+            <p>[CANTIDAD_DE_PISTAS]</p>
+            <p>[FILA] [COLUMNA] [VALOR]</p>
+            <p>...</p>
+            <br>
+            <p class="code-example">Máximo 40×40</p>
+          </div>
+        </details>
+        <span id="compete-reupload-icon" title="Subir otro mapa" style="display:none; width:46px; height:46px; border-radius:10px; background:#e53e3e; color:#fff; font-size:22px; font-weight:bold; cursor:pointer; z-index:5; user-select:none; flex-shrink:0; align-items:center; justify-content:center;">+</span>
+      </div>
+      <div class="upload-dropzone" id="compete-dropzone">
+        <div class="dropzone-content">
+          ${ICONS.UPLOAD}
+          <p>Arrastra tu .txt aqui<br>o haz clic para buscar</p>
+          <input type="file" id="compete-input" accept=".txt" hidden>
+        </div>
+      </div>
+      <div id="compete-error" class="upload-error"></div>
+      <div id="compete-console" class="compete-console" style="display:none;">
+        <div id="compete-output"></div>
+        <div class="c-input-line">
+          <span class="c-prompt">$</span>&nbsp;<input type="text" id="compete-cmd" class="c-input" spellcheck="false" autocomplete="off">
+        </div>
+      </div>
     </div>
   `;
 }
@@ -1790,6 +1816,201 @@ function _handleUploadFile(file) {
  * FILA COL VALOR
  * ...
  */
+// ══════════════════════════════════════════════════════════
+// TAB COMPETIR 🚀
+// ══════════════════════════════════════════════════════════
+
+function _bindCompeteEvents() {
+  const dropzone = document.getElementById('compete-dropzone');
+  const fileInput = document.getElementById('compete-input');
+  const cmdInput = document.getElementById('compete-cmd');
+  if (!dropzone || !fileInput) return;
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault(); dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) _handleCompeteFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) _handleCompeteFile(fileInput.files[0]);
+  });
+
+  // Enter en la terminal ejecuta el comando
+  if (cmdInput) {
+    cmdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        _handleCompeteCmd();
+      }
+    });
+  }
+
+  // Click en la consola foca el input
+  const consoleEl = document.getElementById('compete-console');
+  if (consoleEl) {
+    consoleEl.addEventListener('click', () => {
+      if (cmdInput && !cmdInput.disabled) cmdInput.focus();
+    });
+  }
+}
+
+/** Estado interno de la terminal Competir */
+let _competeState = null;
+
+function _handleCompeteFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const result = parseMapFile(text);
+
+    const errorEl = document.getElementById('compete-error');
+    const consoleEl = document.getElementById('compete-console');
+    const outputEl = document.getElementById('compete-output');
+    const cmdInput = document.getElementById('compete-cmd');
+    const dropzoneEl = document.getElementById('compete-dropzone');
+    const reuploadBtn = document.getElementById('compete-reupload-icon');
+
+    if (result.error) {
+      errorEl.innerHTML = `<span class="badge badge-red">${result.error}</span>`;
+      consoleEl.style.display = 'none';
+      return;
+    }
+
+    errorEl.innerHTML = '';
+    dropzoneEl.style.display = 'none';
+    consoleEl.style.display = 'flex';
+
+    const { rows, cols, grid } = result;
+    const clues = extractClues(grid);
+    const fileName = file.name || 'mapa.txt';
+
+    // Guardar estado para la terminal
+    _competeState = { grid, clues, fileName, rows, cols, fileContent: text, solved: false };
+
+    // Mostrar file loaded en terminal
+    outputEl.innerHTML = '';
+    _termLog(outputEl, `<span class="c-dim">shikaku-dlx v1.0 — DLX Algorithm X (Knuth)</span>`);
+    _termLog(outputEl, '');
+    _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">ls</span>`);
+    _termLog(outputEl, `  ${fileName}`);
+    _termLog(outputEl, '');
+    _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">cat</span> ${fileName}`);
+    _termLog(outputEl, `  <span class="c-dim">${cols}x${rows} | ${clues.length} pistas | ${rows * cols} celdas</span>`);
+    _termLog(outputEl, '');
+
+    // Pre-fill command y focus
+    cmdInput.value = `./shikaku-dlx ${fileName}`;
+    setTimeout(() => cmdInput.focus(), 50);
+
+    // Botón volver a subir
+    if (reuploadBtn) {
+      reuploadBtn.style.display = 'flex';
+      reuploadBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        errorEl.innerHTML = '';
+        consoleEl.style.display = 'none';
+        outputEl.innerHTML = '';
+        cmdInput.value = '';
+        dropzoneEl.style.display = 'flex';
+        reuploadBtn.style.display = 'none';
+        _competeState = null;
+        document.getElementById('compete-input').value = '';
+      };
+    }
+  };
+  reader.readAsText(file);
+}
+
+function _termLog(outputEl, html) {
+  outputEl.innerHTML += html + '\n';
+  outputEl.parentElement.scrollTop = outputEl.parentElement.scrollHeight;
+}
+
+function _fmtTime(ms) {
+  if (ms < 1) return ms.toFixed(6);
+  if (ms < 1000) return ms.toFixed(4);
+  return (ms / 1000).toFixed(4) + 's';
+}
+
+function _handleCompeteCmd() {
+  const outputEl = document.getElementById('compete-output');
+  const cmdInput = document.getElementById('compete-cmd');
+  const raw = cmdInput.value.trim();
+  cmdInput.value = '';
+
+  if (!raw) return;
+
+  // Eco del comando
+  _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">${raw}</span>`);
+
+  if (!_competeState) {
+    _termLog(outputEl, `  <span class="c-err">no hay archivo cargado</span>`);
+    _termLog(outputEl, '');
+    return;
+  }
+
+  const { grid, clues, fileName, rows, cols, fileContent } = _competeState;
+
+  // Comandos disponibles
+  if (raw === 'ls') {
+    _termLog(outputEl, `  ${fileName}`);
+    _termLog(outputEl, '');
+  } else if (raw === `cat ${fileName}` || raw === 'cat *') {
+    _termLog(outputEl, `  <span class="c-dim">${cols}x${rows} | ${clues.length} pistas | ${rows * cols} celdas</span>`);
+    _termLog(outputEl, '');
+  } else if (raw === `nano ${fileName}`) {
+    // Mostrar contenido del archivo en formato "nano"
+    _termLog(outputEl, fileContent.split('\n').map((line, i) =>
+      `  ${String(i + 1).padEnd(3)} ${line}`
+    ).join('\n'));
+    _termLog(outputEl, '');
+    _termLog(outputEl, `<span class="c-dim">[ leer ${fileName} ]</span>`);
+    _termLog(outputEl, '');
+  } else if (raw === 'clear') {
+    outputEl.innerHTML = '';
+  } else if (raw === 'help') {
+    _termLog(outputEl, `  <span class="c-dim">ls</span>                      listar archivos`);
+    _termLog(outputEl, `  <span class="c-dim">cat ${fileName}</span>          ver info del mapa`);
+    _termLog(outputEl, `  <span class="c-dim">nano ${fileName}</span>         ver contenido del archivo`);
+    _termLog(outputEl, `  <span class="c-dim">./shikaku-dlx ${fileName}</span>    resolver (DLX Algorithm X)`);
+    _termLog(outputEl, `  <span class="c-dim">clear</span>                    limpiar terminal`);
+    _termLog(outputEl, '');
+  } else if (raw.startsWith('./shikaku-dlx')) {
+    // Resolver
+    cmdInput.disabled = true;
+    _termLog(outputEl, `  <span class="c-dim">solving...</span>`);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const result = solve(grid, clues, 1, 60000);
+        const ms = result.stats.timeMs;
+        const nodes = result.stats.nodesExplored;
+
+        if (result.count >= 1) {
+          _termLog(outputEl, `  <span class="c-ok">✓ solved</span> <span class="c-time">${_fmtTime(ms)} ms</span>`);
+          _termLog(outputEl, `  <span class="c-dim">${nodes.toLocaleString()} nodos | ${ms > 0 ? Math.round(nodes / ms * 1000).toLocaleString() : '∞'} nodos/s</span>`);
+          _competeState.solved = true;
+        } else if (result.timedOut) {
+          _termLog(outputEl, `  <span class="c-err">⏱ timeout</span> <span class="c-dim">(${_fmtTime(ms)})</span>`);
+          _termLog(outputEl, `  <span class="c-dim">${nodes.toLocaleString()} nodos explorados</span>`);
+        } else {
+          _termLog(outputEl, `  <span class="c-err">✗ sin solucion</span> <span class="c-dim">(${_fmtTime(ms)})</span>`);
+        }
+
+        _termLog(outputEl, '');
+        cmdInput.disabled = false;
+        cmdInput.focus();
+      });
+    });
+  } else {
+    _termLog(outputEl, `  <span class="c-err">command not found:</span> ${raw}`);
+    _termLog(outputEl, `  <span class="c-dim">escribe</span> help <span class="c-dim">para ver comandos</span>`);
+    _termLog(outputEl, '');
+  }
+}
+
 function _showToast(msg) {
   let toast = document.getElementById('ui-toast');
   if (!toast) {

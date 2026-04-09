@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+/**
+ * shikaku-dlx - Ejecutable DLX para Shikaku
+ * Uso: ./shikaku-dlx archivo.txt
+ */
+
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { solve, extractClues } from './shikaku/js/solver.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function parseMapFile(text) {
+  const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l);
+  if (lines.length < 2) return { error: 'Formato inválido' };
+
+  const [width, height] = lines[0].split(/\s+/).map(Number);
+  if (!width || !height || width < 1 || height < 1 || width > 40 || height > 40) {
+    return { error: 'Ancho/alto inválido (1-40)' };
+  }
+
+  const numClues = parseInt(lines[1]);
+  if (isNaN(numClues) || numClues < 1 || numClues + 2 > lines.length) {
+    return { error: 'Número de pistas inválido' };
+  }
+
+  const grid = Array(height).fill(null).map(() => Array(width).fill(0));
+  const clueMap = new Set();
+
+  for (let i = 0; i < numClues; i++) {
+    const parts = lines[2 + i].split(/\s+/).map(Number);
+    if (parts.length !== 3) return { error: `Pista ${i+1} inválida` };
+
+    const [row, col, val] = parts;
+    if (row < 0 || row >= height || col < 0 || col >= width) {
+      return { error: `Pista ${i+1}: posición fuera de rango` };
+    }
+
+    if (grid[row][col] !== 0) {
+      return { error: `Pista duplicada en ${row},${col}` };
+    }
+
+    grid[row][col] = val;
+    clueMap.add(row * width + col);
+  }
+
+  // Validar que la suma de pistas = total celdas
+  let totalArea = 0;
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      if (grid[r][c] > 0) totalArea += grid[r][c];
+    }
+  }
+
+  if (totalArea !== width * height) {
+    return { error: `Suma de pistas (${totalArea}) ≠ celdas (${width * height})` };
+  }
+
+  return { grid, rows: height, cols: width };
+}
+
+function fmtTime(ms) {
+  if (ms < 1) return ms.toFixed(6);
+  if (ms < 1000) return ms.toFixed(4);
+  return (ms / 1000).toFixed(4) + 's';
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    console.error('Uso: shikaku-dlx <archivo.txt>');
+    process.exit(1);
+  }
+
+  const filePath = args[0];
+  let text;
+
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    console.error(`error: no se puede leer ${filePath}`);
+    process.exit(1);
+  }
+
+  const result = parseMapFile(text);
+  if (result.error) {
+    console.error(`error: ${result.error}`);
+    process.exit(1);
+  }
+
+  const { grid, rows, cols } = result;
+  const clues = extractClues(grid);
+
+  const t0 = performance.now();
+  const solveResult = solve(grid, clues, 1, 60000);
+  const ms = solveResult.stats.timeMs;
+  const nodes = solveResult.stats.nodesExplored;
+
+  if (solveResult.count >= 1) {
+    console.log(`✓ solved  ${fmtTime(ms)} ms`);
+    console.log(`  ${nodes.toLocaleString()} nodos | ${ms > 0 ? Math.round(nodes / ms * 1000).toLocaleString() : '∞'} nodos/s`);
+  } else if (solveResult.timedOut) {
+    console.log(`⏱ timeout (${fmtTime(ms)})`);
+    console.log(`  ${nodes.toLocaleString()} nodos explorados`);
+  } else {
+    console.log(`✗ sin solucion (${fmtTime(ms)})`);
+  }
+}
+
+main().catch(err => {
+  console.error('error:', err.message);
+  process.exit(1);
+});

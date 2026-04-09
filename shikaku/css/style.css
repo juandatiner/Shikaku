@@ -1301,6 +1301,81 @@ body {
   color: #666;
 }
 
+.compete-console {
+  width: 100%;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 14px 16px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+  font-size: 13px;
+  color: #c9d1d9;
+  overflow-y: auto;
+  max-height: 400px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  display: none;
+  flex-direction: column;
+}
+
+.compete-console #compete-output {
+  white-space: pre-wrap;
+}
+
+.compete-console .c-input-line {
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.compete-console .c-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e0e0ff;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  padding: 0;
+  caret-color: #4ade80;
+}
+
+.compete-console .c-input:disabled {
+  opacity: 0.4;
+}
+
+.compete-console .c-time {
+  color: #ffd700;
+  font-weight: 700;
+  font-size: 20px;
+}
+
+.compete-console .c-ok {
+  color: #4ade80;
+}
+
+.compete-console .c-err {
+  color: #f87171;
+}
+
+.compete-console .c-dim {
+  color: #484f58;
+}
+
+.compete-console .c-prompt {
+  color: #4ade80;
+  font-weight: 700;
+}
+
+.compete-console .c-cmd {
+  color: #e0e0ff;
+  font-weight: 600;
+}
+
 .upload-error:empty {
   display: none;
 }
@@ -1411,6 +1486,23 @@ body {
 
 /* ─── RESPONSIVO ─── */
 
+@media (max-width: 360px) {
+  .bottom-nav {
+    height: 48px;
+  }
+
+  .nav-tab {
+    font-size: 9px;
+    padding: 6px 8px;
+    gap: 1px;
+  }
+
+  .nav-tab svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
 @media (max-width: 480px) {
   .home-logo h1 {
     font-size: 36px;
@@ -1486,7 +1578,28 @@ body {
   }
 
   .bottom-nav {
-    height: 60px;
+    height: 52px;
+  }
+
+  .nav-tab {
+    font-size: 10px;
+    padding: 6px 10px;
+    gap: 2px;
+  }
+
+  .nav-tab svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .compete-console {
+    max-height: 200px;
+    font-size: 12px;
+    padding: 10px 12px;
+  }
+
+  .compete-console .c-time {
+    font-size: 16px;
   }
 
   .difficulty-btn {

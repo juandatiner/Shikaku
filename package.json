@@ -1,0 +1,10 @@
+{
+  "name": "shikaku",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Shikaku puzzle game with DLX solver",
+  "main": "shikaku-dlx",
+  "bin": {
+    "shikaku-dlx": "./shikaku-dlx"
+  }
+}
