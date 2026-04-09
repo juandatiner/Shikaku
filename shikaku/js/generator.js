@@ -4,8 +4,8 @@
  * Crea particiones aleatorias válidas y verifica solución única.
  */
 
-import { solve, extractClues } from './solver.js?v=13';
-import { DIFFICULTY_CONFIG } from './constants.js?v=13';
+import { solve, extractClues } from './solver.js?v=14';
+import { DIFFICULTY_CONFIG } from './constants.js?v=14';
 
 /**
  * Genera un número aleatorio entre min y max (inclusivos)

@@ -4,7 +4,7 @@
  * Utiliza canvas doble (fondo + overlay) para rendimiento.
  */
 
-import { REGION_COLORS, REGION_TEXT_COLORS, CELL_SIZE_LIMITS } from './constants.js?v=13';
+import { REGION_COLORS, REGION_TEXT_COLORS, CELL_SIZE_LIMITS } from './constants.js?v=14';
 
 /**
  * Clase principal del tablero de juego

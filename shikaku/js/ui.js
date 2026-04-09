@@ -3,10 +3,10 @@
  * @description Navegación entre pantallas, eventos globales, tabs y lógica de UI.
  */
 
-import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=13';
-import { Board } from './board.js?v=13';
-import { getSizeForLevel, generatePuzzle } from './generator.js?v=13';
-import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=13';
+import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=14';
+import { Board } from './board.js?v=14';
+import { getSizeForLevel, generatePuzzle } from './generator.js?v=14';
+import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=14';
 
 /** Estado global de la aplicación */
 const state = {
@@ -312,6 +312,9 @@ function _renderHomeScreen() {
         <p class="home-subtitle">El rompecabezas de los rectángulos</p>
       </div>
       <div class="home-content">
+        <div id="tab-compete" class="tab-content">
+          ${_renderCompeteTab()}
+        </div>
         <div id="tab-play" class="tab-content active">
           ${_renderPlayTab()}
         </div>
@@ -326,13 +329,17 @@ function _renderHomeScreen() {
         </div>
       </div>
       <nav class="bottom-nav">
-        <button class="nav-tab active" data-tab="play">
-          ${ICONS.PUZZLE}
-          <span>Jugar</span>
+        <button class="nav-tab" data-tab="compete">
+          ${ICONS.TROPHY}
+          <span>Competir</span>
         </button>
         <button class="nav-tab" data-tab="create">
           ${ICONS.PENCIL}
           <span>Crear</span>
+        </button>
+        <button class="nav-tab active" data-tab="play">
+          ${ICONS.PUZZLE}
+          <span>Jugar</span>
         </button>
         <button class="nav-tab" data-tab="upload">
           ${ICONS.UPLOAD}
@@ -361,6 +368,16 @@ function _renderHomeScreen() {
   _bindUploadEvents();
   _bindExportEvents();
   _bindLibraryEvents();
+}
+
+function _renderCompeteTab() {
+  return `
+    <div class="compete-panel" style="max-width:560px;margin:0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;text-align:center;color:#999;">
+      <div style="font-size:48px;margin-bottom:16px;">🏆</div>
+      <h2 style="color:#555;margin:0 0 8px;">Competir</h2>
+      <p style="font-size:14px;">Próximamente</p>
+    </div>
+  `;
 }
 
 function _renderPlayTab() {
@@ -461,8 +478,8 @@ function _renderUploadTab() {
           <button class="btn btn-secondary" id="upload-verify" style="flex: 1;">Verificar</button>
           <button class="btn btn-primary" id="upload-play" disabled style="flex: 1;">Jugar</button>
         </div>
-        <button class="btn btn-secondary" id="upload-library" style="width: 100%;" title="Ver mapas subidos">🗺️ Mis mapas</button>
       </div>
+      <button class="btn btn-secondary" id="upload-library" style="width: 100%;" title="Ver mapas subidos">🗺️ Mis mapas</button>
     </div>
   `;
 }
