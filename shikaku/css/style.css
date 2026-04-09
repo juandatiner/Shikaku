@@ -1020,6 +1020,12 @@ body {
   border-color: #888;
 }
 
+.create-inputs input:disabled {
+  -webkit-appearance: none;
+  -moz-appearance: textfield;
+  opacity: 0.85;
+}
+
 .create-board-container {
   overflow: auto;
   max-height: 400px;
@@ -1137,7 +1143,7 @@ body {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 
@@ -1251,6 +1257,10 @@ body {
   line-height: 1.5;
 }
 
+.upload-preview:empty {
+  display: none;
+}
+
 .upload-preview {
   text-align: center;
 }
@@ -1278,7 +1288,7 @@ body {
 }
 
 .verify-result {
-  margin-top: 12px;
+  margin-top: 6px;
   text-align: center;
 }
 
@@ -1289,6 +1299,10 @@ body {
   gap: 8px;
   font-size: 14px;
   color: #666;
+}
+
+.upload-error:empty {
+  display: none;
 }
 
 .upload-error {

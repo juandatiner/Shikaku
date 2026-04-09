@@ -30,6 +30,7 @@ const state = {
   hintsUsed: 0,
   isCustomMap: false,
   activeCustomMapId: null,
+  uploadedGrid: null,  // grid del mapa subido actualmente (para re-chequear duplicados)
 };
 
 // ══════════════════════════════════════════════════════════
@@ -72,7 +73,7 @@ function _saveCustomMap(grid, name, type = 'created') {
   const clues = extractClues(grid);
   const rows = grid.length;
   const cols = grid[0].length;
-  const defaultName = `${cols}×${rows} · ${clues.length}📍`;
+  const defaultName = `${cols}×${rows} · ${clues.length} pistas`;
   maps.push({
     id,
     name: name || defaultName,
@@ -452,15 +453,16 @@ function _renderUploadTab() {
           <input type="file" id="upload-input" accept=".txt" hidden>
         </div>
       </div>
-      <div id="upload-preview" class="upload-preview"></div>
       <div id="upload-error" class="upload-error"></div>
+      <div id="upload-preview" class="upload-preview"></div>
+      <div id="upload-status" class="create-status"></div>
       <div id="upload-actions" class="create-actions" style="display:none; flex-direction: column; gap: 12px;">
         <div style="display: flex; gap: 12px;">
           <button class="btn btn-secondary" id="upload-verify" style="flex: 1;">Verificar</button>
           <button class="btn btn-primary" id="upload-play" disabled style="flex: 1;">Jugar</button>
         </div>
+        <button class="btn btn-secondary" id="upload-library" style="width: 100%;" title="Ver mapas subidos">🗺️ Mis mapas</button>
       </div>
-      <button class="btn btn-secondary" id="upload-library" style="width: 100%;" title="Ver mapas subidos">🗺️ Mis mapas</button>
     </div>
   `;
 }
@@ -1442,7 +1444,7 @@ function _createEditableGrid(rows, cols) {
       // Auto-guardar solo si no existe ya
       if (!_findDuplicateMap(g)) {
         const clues = extractClues(g);
-        const defaultName = `${cols}×${rows} · ${clues.length}📍`;
+        const defaultName = `${cols}×${rows} · ${clues.length} pistas`;
         _saveCustomMap(g, defaultName);
       }
     }
@@ -1576,20 +1578,20 @@ async function _verifyCreatedMap(grid) {
 }
 
 async function _verifyUploadedMap(grid) {
-  const status = document.getElementById('upload-preview');
+  const statusEl = document.getElementById('upload-status');
   const verifyBtn = document.getElementById('upload-verify');
   const playBtn = document.getElementById('upload-play');
 
   const clues = extractClues(grid);
   if (clues.length === 0) {
-    status.innerHTML += '<div class="verify-result"><span class="badge badge-red">Error: El mapa no tiene pistas.</span></div>';
+    statusEl.innerHTML = '<span class="badge badge-red">Error: El mapa no tiene pistas.</span>';
     return;
   }
 
   const maxCell = grid.length * grid[0].length;
   const invalidClue = clues.find(c => c.value > maxCell);
   if (invalidClue) {
-    status.innerHTML += `<div class="verify-result"><span class="badge badge-red">Error: Número ${invalidClue.value} excede el máximo posible (${maxCell}).</span></div>`;
+    statusEl.innerHTML = `<span class="badge badge-red">Error: Número ${invalidClue.value} excede el máximo posible (${maxCell}).</span>`;
     playBtn.disabled = true;
     return;
   }
@@ -1607,10 +1609,7 @@ async function _verifyUploadedMap(grid) {
 
   verifyBtn.disabled = true;
   verifyBtn.innerHTML = '<span class="spinner-inline spinner-dark"></span> Verificando...';
-
-  // Remove any previous verify result
-  const prev = status.querySelector('.verify-result');
-  if (prev) prev.remove();
+  statusEl.innerHTML = '';
 
   try {
     const result = await new Promise((resolve, reject) => {
@@ -1638,17 +1637,25 @@ async function _verifyUploadedMap(grid) {
 
     if (result.count >= 1) {
       const label = result.count === 1 && !result.timedOut ? 'solución única' : `${countText} soluciones`;
-      status.innerHTML += `<div class="verify-result"><span class="badge badge-green">✓ Válido con ${label}${sumStatus}</span>${verifyNote}</div>`;
+      statusEl.innerHTML = `<span class="badge badge-green">✓ Válido con ${label}${sumStatus}</span>${verifyNote}`;
       playBtn.disabled = false;
+
+      // Guardar en biblioteca si no existe aún
+      if (!_findDuplicateMap(grid)) {
+        const rows = grid.length;
+        const cols = grid[0].length;
+        const mapName = `${cols}×${rows} · ${clues.length} pistas`;
+        _saveCustomMap(grid, mapName, 'uploaded');
+      }
     } else {
-      status.innerHTML += `<div class="verify-result"><span class="badge badge-red">✗ Sin solución.</span>${verifyNote}</div>`;
+      statusEl.innerHTML = `<span class="badge badge-red">✗ Sin solución.</span>${verifyNote}`;
       playBtn.disabled = true;
     }
   } catch (err) {
-    status.innerHTML += `<div class="verify-result"><span class="badge badge-red">Error al verificar: ${err.message}</span></div>`;
+    statusEl.innerHTML = `<span class="badge badge-red">Error al verificar: ${err.message}</span>`;
   } finally {
     verifyBtn.disabled = false;
-    verifyBtn.innerHTML = 'Verificar mapa';
+    verifyBtn.innerHTML = 'Verificar';
   }
 }
 
@@ -1703,17 +1710,16 @@ function _handleUploadFile(file) {
       // Mostrar mapa grande
       _renderUploadPreview(result, previewEl);
 
+      // Guardar referencia al grid subido para re-chequear al eliminar
+      state.uploadedGrid = result.grid;
+
       // Verificar si es duplicado
       const duplicate = _findDuplicateMap(result.grid);
+      const statusEl = document.getElementById('upload-status');
       if (duplicate) {
-        previewEl.innerHTML += `<div style="margin-top: 12px; text-align: center;"><span class="badge badge-yellow">⚠️ Este mapa ya existe en tu biblioteca</span></div>`;
+        statusEl.innerHTML = '<span class="badge badge-yellow">Este mapa ya existe en tu biblioteca</span>';
       } else {
-        // Auto-guardar en biblioteca si es nuevo
-        const clues = extractClues(result.grid);
-        const rows = result.grid.length;
-        const cols = result.grid[0].length;
-        const mapName = `${cols}×${rows} · ${clues.length}📍`;
-        _saveCustomMap(result.grid, mapName, 'uploaded');
+        statusEl.innerHTML = '';
       }
 
       actionsEl.style.display = 'flex';
@@ -1727,8 +1733,10 @@ function _handleUploadFile(file) {
           e.stopPropagation(); // evitar toggle del details
           previewEl.innerHTML = '';
           errorEl.innerHTML = '';
+          document.getElementById('upload-status').innerHTML = '';
           dropzoneEl.style.display = 'flex';
           actionsEl.style.display = 'none';
+          state.uploadedGrid = null;
           reuploadIconBtn.style.display = 'none';
           document.getElementById('upload-input').value = '';
         };
@@ -1836,26 +1844,36 @@ export function parseMapFile(text) {
 function _renderUploadPreview(mapData, container) {
   const { rows, cols, grid } = mapData;
   const isPC = window.innerWidth > 768;
-  const maxSize = isPC ? Math.min(window.innerWidth * 0.55, 620) : 360;
-  const cs = Math.min(Math.floor(maxSize / Math.max(rows, cols)), isPC ? 80 : 50);
+  const maxCellSize = isPC ? 72 : 48;
+  const minCellSize = 24;
+  const availableW = isPC ? Math.min(window.innerWidth * 0.5, 620) : window.innerWidth - 48;
+  const cellSize = Math.max(minCellSize, Math.min(maxCellSize, Math.floor(availableW / cols)));
+  const fontSize = Math.max(9, Math.floor(cellSize * 0.42));
+  const gridW = cellSize * cols;
 
-  let html = '<div class="upload-preview-container">';
-  html += '<div class="upload-preview-grid">';
-  html += `<table class="preview-table" style="border-collapse:collapse">`;
+  // Dimensiones arriba (como Create, pero solo lectura)
+  const clueCount = extractClues(grid).length;
+  const boxStyle = 'display:flex;align-items:center;justify-content:center;width:90px;padding:10px;border:2px solid #ddd;border-radius:10px;font-size:18px;font-weight:600;color:#333;background:#fff;';
+  let html = `<div class="create-inputs" style="pointer-events:none;justify-content:center;margin:-20px 0 16px;">`;
+  html += `<label>Filas <div style="${boxStyle}">${rows}</div></label>`;
+  html += `<label>Columnas <div style="${boxStyle}">${cols}</div></label>`;
+  html += `<label style="color:#e67e22;">Pistas <div style="${boxStyle}border-color:#e67e22;color:#e67e22;">${clueCount}</div></label>`;
+  html += `</div>`;
+
+  // Grid con mismo contenedor que Create (overflow:auto, max-height via CSS)
+  html += `<div class="create-board-container">`;
+  html += `<table class="editable-grid" style="width:${gridW}px;table-layout:fixed">`;
   for (let r = 0; r < rows; r++) {
     html += '<tr>';
     for (let c = 0; c < cols; c++) {
       const val = grid[r][c];
-      const bgColor = val > 0 ? '#f0f0f0' : '#fafafa';
-      html += `<td style="width:${cs}px;height:${cs}px;border:1px solid #ddd;text-align:center;font-size:${Math.max(11, cs*0.4)}px;font-weight:600;background:${bgColor};${val > 0 ? 'color:#333' : 'color:#eee'}">${val > 0 ? val : ''}</td>`;
+      html += `<td class="edit-cell" style="width:${cellSize}px;height:${cellSize}px;font-size:${fontSize}px">
+                <input type="number" value="${val > 0 ? val : ''}" placeholder="0" class="cell-input" disabled>
+              </td>`;
     }
     html += '</tr>';
   }
   html += '</table>';
-  html += '</div>';
-  html += `<div class="upload-preview-info" style="margin-top: 12px; text-align: center; font-size: 13px; color: #666;">`;
-  html += `${cols}×${rows} · ${extractClues(grid).length} pistas`;
-  html += `</div>`;
   html += '</div>';
   container.innerHTML = html;
 }
@@ -1986,6 +2004,14 @@ window._deleteMapFromLibrary = function(id) {
   _showConfirm('¿Seguro que deseas eliminar este mapa?', () => {
     _deleteCustomMap(id);
     _showLibrary(_lastLibraryType);
+
+    // Si hay un mapa subido visible, re-chequear si ya no es duplicado
+    if (state.uploadedGrid) {
+      const statusEl = document.getElementById('upload-status');
+      if (statusEl && !_findDuplicateMap(state.uploadedGrid)) {
+        statusEl.innerHTML = '';
+      }
+    }
   });
 };
 
