@@ -6,7 +6,7 @@
 import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=29';
 import { Board } from './board.js?v=29';
 import { getSizeForLevel, generatePuzzle } from './generator.js?v=29';
-import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=29';
+import { solve, extractClues, getCandidates, getFactorizations, countSolutionsBT, validateSolution } from './solver.js?v=29';
 
 /** Estado global de la aplicación */
 const state = {
@@ -1119,111 +1119,374 @@ function _stopAutoPlay() {
 }
 
 function _showAlgoModal(result) {
-  const backdrop = document.getElementById('algo-sheet-backdrop');
-  const sheet = document.getElementById('algo-sheet');
-  const inner = document.getElementById('algo-modal-inner');
-  if (!sheet || !inner) return;
+  // Use the comprehensive modal with the current game grid
+  const grid = state.activeBoard?.grid || state.currentGrid;
+  if (!grid) return;
+  _showSolveInfoModal(result, grid);
+}
 
+// ══════════════════════════════════════════════════════════
+// MODAL COMPRENSIVO DE INFORMACIÓN DEL SOLVER
+// ══════════════════════════════════════════════════════════
+
+const _RECT_PALETTE = [
+  '#FFB3BA','#BAFFC9','#BAE1FF','#FFFFBA','#E8BAFF',
+  '#FFD9B3','#B3FFE6','#B3D9FF','#FFB3E6','#D9FFB3',
+  '#B3FFFF','#FFE6B3','#D9B3FF','#B3FFB3','#FFB3FF',
+  '#C9E4CA','#F0C9CF','#C9D1F0','#F0E2C9','#C9F0EC'
+];
+
+function _showSolveInfoModal(result, grid) {
+  // ── Ensure modal DOM elements exist ──
+  let backdrop = document.getElementById('solve-info-backdrop');
+  let sheet = document.getElementById('solve-info-sheet');
+  let inner = document.getElementById('solve-info-inner');
+
+  if (!backdrop) {
+    backdrop = document.createElement('div');
+    backdrop.id = 'solve-info-backdrop';
+    backdrop.className = 'algo-sheet-backdrop';
+    backdrop.style.display = 'none';
+    document.body.appendChild(backdrop);
+  }
+  if (!sheet) {
+    sheet = document.createElement('div');
+    sheet.id = 'solve-info-sheet';
+    sheet.className = 'algo-sheet';
+    sheet.style.display = 'none';
+    inner = document.createElement('div');
+    inner.id = 'solve-info-inner';
+    inner.className = 'algo-sheet-inner';
+    sheet.appendChild(inner);
+    document.body.appendChild(sheet);
+  }
+  inner = document.getElementById('solve-info-inner');
+
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const totalCells = rows * cols;
+  const clues = extractClues(grid);
   const s = result.stats;
-  const totalSols = result.count;
-  const perClue = s.perClue || [];
+  const hasSolution = result.solutions && result.solutions.length > 0;
+  const sol = hasSolution ? result.solutions[0] : null;
   const timeoutNote = result.timedOut ? ' <span class="algo-badge algo-warn">timeout</span>' : '';
 
-  // Filas de la tabla — una por pista
-  const rows = perClue.map((pc, i) => {
-    const { clue, candidates, rectChosen } = pc;
-    const rect = rectChosen;
-    const rectStr = rect
-      ? `fila ${rect.r0+1}, col ${rect.c0+1} → ${rect.w}×${rect.h}`
-      : '—';
-    const areaStr = rect ? `${rect.w * rect.h} celdas` : '—';
+  // ── Build per-clue analysis ──
+  const clueAnalysis = clues.map(clue => {
+    const allCands = getCandidates(clue, rows, cols);
+    const factors = getFactorizations(clue.value);
+    const chosen = sol ? sol.find(s => s.clue.row === clue.row && s.clue.col === clue.col) : null;
+    return {
+      clue,
+      candidates: allCands.length,
+      allCandidates: allCands,
+      chosen: chosen ? chosen.rect : null,
+      factors,
+      factStr: factors.map(([w,h]) => `${w}×${h}`).join(', ')
+    };
+  });
+
+  // Sort by MRV (fewest candidates first)
+  const sortedClues = [...clueAnalysis].sort((a, b) => a.candidates - b.candidates);
+
+  // Branching factor stats
+  const avgCandidates = clueAnalysis.length > 0
+    ? (clueAnalysis.reduce((s, c) => s + c.candidates, 0) / clueAnalysis.length).toFixed(1)
+    : '0';
+  const maxCandidates = clueAnalysis.length > 0
+    ? Math.max(...clueAnalysis.map(c => c.candidates))
+    : 0;
+  const minCandidates = clueAnalysis.length > 0
+    ? Math.min(...clueAnalysis.map(c => c.candidates))
+    : 0;
+
+  // ── Solution map (color-coded grid) ──
+  let solutionMapHTML = '';
+  if (sol) {
+    // Build cell→rectangle index mapping
+    const cellMap = Array.from({ length: rows }, () => new Array(cols).fill(-1));
+    const cluePositions = new Set();
+    sol.forEach((step, idx) => {
+      const r = step.rect;
+      cluePositions.add(`${step.clue.row},${step.clue.col}`);
+      for (let ri = r.r0; ri < r.r0 + r.h; ri++) {
+        for (let ci = r.c0; ci < r.c0 + r.w; ci++) {
+          cellMap[ri][ci] = idx;
+        }
+      }
+    });
+
+    let mapRows = '';
+    for (let ri = 0; ri < rows; ri++) {
+      let mapCells = '';
+      for (let ci = 0; ci < cols; ci++) {
+        const idx = cellMap[ri][ci];
+        const bg = idx >= 0 ? _RECT_PALETTE[idx % _RECT_PALETTE.length] : '#f5f5f5';
+        const isClue = cluePositions.has(`${ri},${ci}`);
+        const val = grid[ri][ci];
+        const cellContent = val > 0 ? `<strong>${val}</strong>` : '';
+        const border = isClue ? 'border:2px solid #333;' : '';
+        mapCells += `<td class="smap-cell" style="background:${bg};${border}">${cellContent}</td>`;
+      }
+      mapRows += `<tr>${mapCells}</tr>`;
+    }
+    solutionMapHTML = `
+      <p class="algo-section-title">Mapa visual de la solucion</p>
+      <div class="smap-container">
+        <table class="smap-table"><tbody>${mapRows}</tbody></table>
+      </div>
+      <div class="smap-legend">
+        ${sol.map((step, i) => {
+          const c = step.clue;
+          const r = step.rect;
+          return `<span class="smap-legend-item"><span class="smap-legend-color" style="background:${_RECT_PALETTE[i % _RECT_PALETTE.length]}"></span>(${c.row+1},${c.col+1})=${c.value} → ${r.w}×${r.h}</span>`;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  // ── Difficulty assessment ──
+  let diffLevel, diffColor, diffIcon, diffDesc;
+  const branchProduct = clueAnalysis.reduce((p, c) => p * Math.min(c.candidates, 20), 1);
+  const logBranch = clueAnalysis.reduce((s, c) => s + Math.log2(Math.max(c.candidates, 1)), 0);
+
+  if (logBranch <= 5 || (clueAnalysis.length <= 3 && maxCandidates <= 3)) {
+    diffLevel = 'Trivial'; diffColor = '#10b981'; diffIcon = '🟢';
+    diffDesc = 'Pocas opciones por pista, el solver lo resuelve casi sin backtracking.';
+  } else if (logBranch <= 15 || (maxCandidates <= 6 && clueAnalysis.length <= 8)) {
+    diffLevel = 'Facil'; diffColor = '#22c55e'; diffIcon = '🟡';
+    diffDesc = 'Ramas moderadas, la heuristica MRV reduce rapidamente el espacio de busqueda.';
+  } else if (logBranch <= 30) {
+    diffLevel = 'Media'; diffColor = '#f59e0b'; diffIcon = '🟠';
+    diffDesc = 'Espacio de busqueda significativo, requiere poda y backtracking activos.';
+  } else if (logBranch <= 50) {
+    diffLevel = 'Dificil'; diffColor = '#ef4444'; diffIcon = '🔴';
+    diffDesc = 'Alta ramificacion, el solver debe explorar muchos caminos antes de converger.';
+  } else {
+    diffLevel = 'Extrema'; diffColor = '#7c3aed'; diffIcon = '🟣';
+    diffDesc = 'Espacio combinatorio muy grande, el solver aprovecha al maximo DLX para encontrar la solucion.';
+  }
+
+  // ── Detailed per-clue rows ──
+  const tableRows = sortedClues.map((ca, i) => {
+    const { clue, candidates, factStr, chosen } = ca;
+    const rectStr = chosen
+      ? `(${chosen.r0+1},${chosen.c0+1}) → ${chosen.w}×${chosen.h}`
+      : '<span style="color:#999">—</span>';
+    const areaStr = chosen ? `${chosen.w * chosen.h}` : '—';
+    const candClass = candidates <= 2 ? 'algo-cand-low' : candidates <= 5 ? 'algo-cand-mid' : 'algo-cand-hi';
     return `
       <tr>
         <td class="algo-step">${i + 1}</td>
         <td class="algo-pos">(${clue.row+1}, ${clue.col+1})</td>
         <td class="algo-val">${clue.value}</td>
-        <td class="algo-cands ${candidates <= 2 ? 'algo-cand-low' : candidates <= 5 ? 'algo-cand-mid' : ''}">${candidates}</td>
+        <td class="algo-factorize">${factStr}</td>
+        <td class="algo-cands ${candClass}">${candidates}</td>
         <td class="algo-rect">${rectStr}</td>
         <td class="algo-area">${areaStr}</td>
       </tr>`;
   }).join('');
 
+  // ── Candidate detail expand (top 3 most constrained) ──
+  const top3 = sortedClues.slice(0, 3);
+  const candDetailHTML = top3.map(ca => {
+    const { clue, allCandidates, chosen } = ca;
+    const candList = allCandidates.map(c => {
+      const isChosen = chosen && c.r0 === chosen.r0 && c.c0 === chosen.c0 && c.w === chosen.w && c.h === chosen.h;
+      return `<span class="scand-item ${isChosen ? 'scand-chosen' : ''}">(${c.r0+1},${c.c0+1}) ${c.w}×${c.h}</span>`;
+    }).join('');
+    return `
+      <div class="scand-block">
+        <div class="scand-header">Pista (${clue.row+1},${clue.col+1}) = ${clue.value} — ${allCandidates.length} candidatos</div>
+        <div class="scand-list">${candList}</div>
+      </div>`;
+  }).join('');
+
+  // ── How DLX works explanation ──
+  const dlxExplainHTML = `
+    <div class="solve-explain-section">
+      <p class="algo-section-title">Como funciona paso a paso</p>
+      <div class="solve-steps-flow">
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">1</div>
+          <div class="solve-flow-body">
+            <strong>Modelar como Cobertura Exacta</strong>
+            <span>Cada celda del tablero ${rows}×${cols} (${totalCells} celdas) debe estar cubierta por exactamente un rectangulo. Se crea una matriz binaria donde cada fila es un rectangulo candidato y cada columna es una celda o pista.</span>
+          </div>
+        </div>
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">2</div>
+          <div class="solve-flow-body">
+            <strong>Generar candidatos</strong>
+            <span>Para cada pista, se generan todos los rectangulos validos cuya area coincide con el valor y que contienen la celda de la pista. Total: ${clueAnalysis.reduce((s,c) => s + c.candidates, 0)} candidatos de ${clues.length} pistas.</span>
+          </div>
+        </div>
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">3</div>
+          <div class="solve-flow-body">
+            <strong>Seleccionar columna (MRV)</strong>
+            <span>Se elige la columna con menos 1s — equivale a la pista/celda mas restringida. Esto minimiza la ramificacion (min: ${minCandidates}, max: ${maxCandidates}, promedio: ${avgCandidates}).</span>
+          </div>
+        </div>
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">4</div>
+          <div class="solve-flow-body">
+            <strong>Cubrir y propagar</strong>
+            <span>Al elegir un rectangulo, se "cubren" (eliminan) todas las columnas que toca y todas las filas conflictivas. Dancing Links permite hacer esto en O(1) por enlace.</span>
+          </div>
+        </div>
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">5</div>
+          <div class="solve-flow-body">
+            <strong>Backtrack si es necesario</strong>
+            <span>Si una columna queda sin filas (sin opciones), se deshace la ultima eleccion ("uncover") y se intenta el siguiente candidato. DLX hace esto eficientemente restaurando enlaces.</span>
+          </div>
+        </div>
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">6</div>
+          <div class="solve-flow-body">
+            <strong>Solucion encontrada</strong>
+            <span>${hasSolution
+              ? `Se cubrieron las ${totalCells} celdas con ${clues.length} rectangulos despues de explorar ${s.nodesExplored.toLocaleString()} nodos en ${s.timeMs < 1 ? s.timeMs.toFixed(6) : s.timeMs < 1000 ? s.timeMs.toFixed(4) : (s.timeMs/1000).toFixed(4)+'s'} ms.`
+              : `Despues de explorar ${s.nodesExplored.toLocaleString()} nodos, no se encontro ninguna cobertura valida — el mapa no tiene solucion.`}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // ── Time formatting ──
+  const timeStr = s.timeMs < 1 ? s.timeMs.toFixed(6) + ' ms'
+    : s.timeMs < 1000 ? s.timeMs.toFixed(4) + ' ms'
+    : (s.timeMs / 1000).toFixed(4) + ' s';
+  const nodesStr = s.nodesExplored > 1e6 ? (s.nodesExplored/1e6).toFixed(2)+'M'
+    : s.nodesExplored > 1e3 ? (s.nodesExplored/1e3).toFixed(1)+'K'
+    : s.nodesExplored.toLocaleString();
+
+  // ── Cross-validation info (Play tab has this) ──
+  let crossValidHTML = '';
+  if (result.btCount != null) {
+    const btMatch = result.btCount === result.count || (result.btTimedOut && result.btCount <= result.count);
+    crossValidHTML += `<span class="algo-stat-pill" style="${btMatch ? 'background:#dfd;' : 'background:#fdd;color:#c00;'}">BT: ${result.btCount.toLocaleString()}${result.btTimedOut ? '+' : ''} sol</span>`;
+  }
+  if (result.solutionsValid != null) {
+    crossValidHTML += `<span class="algo-stat-pill" style="${result.solutionsValid ? 'background:#dfd;' : 'background:#fdd;color:#c00;'}">Validacion: ${result.solutionsValid ? 'OK' : result.validationError}</span>`;
+  }
+  if (result.btTimeMs != null) {
+    crossValidHTML += `<span class="algo-stat-pill">BT: ${result.btTimeMs < 1 ? result.btTimeMs.toFixed(6) : result.btTimeMs.toFixed(2)} ms</span>`;
+  }
+
+  // ── Assemble modal ──
   inner.innerHTML = `
     <div class="algo-drag-handle"></div>
     <div class="algo-header">
       <div class="algo-title">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        ¿Cómo llegó a esta solución?
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        ${hasSolution ? 'Como encontro esta solucion?' : 'Analisis del solver'}
       </div>
-      <button class="algo-close" id="algo-close-btn">✕</button>
+      <button class="algo-close" id="solve-info-close">✕</button>
     </div>
 
     <div class="algo-explain-cards">
       <div class="algo-explain-card algo-card-blue">
-        <div class="algo-card-icon">🔁</div>
+        <div class="algo-card-icon">🧮</div>
         <div class="algo-card-body">
-          <strong>Backtracking</strong>
-          <span>Prueba colocar un rectángulo, si falla retrocede e intenta otro</span>
+          <strong>Algorithm X (DLX)</strong>
+          <span>Algoritmo de Knuth con Dancing Links — resuelve cobertura exacta enlazando/desenlazando nodos en O(1)</span>
         </div>
       </div>
       <div class="algo-explain-card algo-card-purple">
-        <div class="algo-card-icon">🎯</div>
+        <div class="algo-card-icon">📐</div>
         <div class="algo-card-body">
-          <strong>Heurística MRV</strong>
-          <span>Ataca primero la pista con <em>menos opciones</em> — reduce ramificaciones</span>
+          <strong>Cobertura Exacta</strong>
+          <span>Cada celda del tablero debe cubrirse por exactamente un rectangulo — formulacion que DLX explota de forma optima</span>
         </div>
       </div>
       <div class="algo-explain-card algo-card-green">
+        <div class="algo-card-icon">🎯</div>
+        <div class="algo-card-body">
+          <strong>Heuristica MRV</strong>
+          <span>Minimum Remaining Values — ataca primero la pista con menos candidatos para reducir ramificaciones</span>
+        </div>
+      </div>
+      <div class="algo-explain-card" style="background:#fef2f2;color:#991b1b;">
         <div class="algo-card-icon">✂️</div>
         <div class="algo-card-body">
-          <strong>Poda</strong>
-          <span>Descarta caminos sin salida antes de explorarlos</span>
+          <strong>Poda y Propagacion</strong>
+          <span>Al elegir un rectangulo, se eliminan todos los candidatos que tocan las mismas celdas — reduce el arbol exponencialmente</span>
         </div>
       </div>
     </div>
 
     <div class="algo-stats-row">
-      <span class="algo-stat-pill">DLX: ${totalSols.toLocaleString()}${timeoutNote} sol</span>
-      ${result.btCount != null ? `<span class="algo-stat-pill" style="${result.btCount === totalSols || (result.btTimedOut && result.btCount <= totalSols) ? '' : 'background:#fdd;color:#c00;'}">BT: ${result.btCount.toLocaleString()}${result.btTimedOut ? '+' : ''} sol</span>` : ''}
-      ${result.solutionsValid != null ? `<span class="algo-stat-pill" style="${result.solutionsValid ? 'background:#dfd;' : 'background:#fdd;color:#c00;'}">Validacion: ${result.solutionsValid ? 'OK' : result.validationError}</span>` : ''}
-      <span class="algo-stat-pill">DLX: ${s.timeMs.toFixed(1)}ms${result.btTimeMs != null ? ` | BT: ${result.btTimeMs.toFixed(0)}ms` : ''}</span>
-      <span class="algo-stat-pill">${s.nodesExplored > 1e6 ? (s.nodesExplored/1e6).toFixed(1)+'M' : s.nodesExplored > 1e3 ? (s.nodesExplored/1e3).toFixed(0)+'K' : s.nodesExplored} nodos</span>
+      <span class="algo-stat-pill">📏 ${cols}×${rows} (${totalCells} celdas)</span>
+      <span class="algo-stat-pill">🔢 ${clues.length} pistas</span>
+      <span class="algo-stat-pill" style="${result.count === 0 ? 'background:#fdd;color:#c00;' : result.count === 1 && !result.timedOut ? 'background:#dfd;color:#065f46;' : ''}">${result.count === 0 ? '✗' : '✓'} ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} solucion${result.count !== 1 ? 'es' : ''}${timeoutNote}</span>
+      <span class="algo-stat-pill">⏱ ${timeStr}</span>
+      <span class="algo-stat-pill">🔍 ${nodesStr} nodos</span>
+      <span class="algo-stat-pill">🌿 ramificacion: ${minCandidates}–${maxCandidates} (x̄ ${avgCandidates})</span>
+      ${crossValidHTML}
     </div>
 
-    <p class="algo-section-title">Orden de decisiones (solución ${state.solutionIndex + 1})</p>
+    <div class="solve-difficulty-bar">
+      <span class="solve-diff-icon">${diffIcon}</span>
+      <span class="solve-diff-label" style="color:${diffColor}"><strong>${diffLevel}</strong></span>
+      <span class="solve-diff-desc">${diffDesc}</span>
+    </div>
 
     <div class="algo-table-wrap">
+      ${solutionMapHTML}
+
+      ${dlxExplainHTML}
+
+      <p class="algo-section-title">Analisis por pista (orden MRV — menos opciones primero)</p>
       <table class="algo-table">
         <thead>
           <tr>
             <th>#</th>
-            <th>Pista</th>
+            <th>Posicion</th>
             <th>Valor</th>
-            <th title="Rectángulos válidos disponibles en ese momento del backtracking">Opciones</th>
-            <th>Rectángulo elegido</th>
-            <th>Área</th>
+            <th title="Formas de factorizar el valor como W×H">Factorizaciones</th>
+            <th title="Rectangulos validos que contienen la pista">Candidatos</th>
+            <th>Rectangulo elegido</th>
+            <th>Area</th>
           </tr>
         </thead>
-        <tbody>${rows}</tbody>
+        <tbody>${tableRows}</tbody>
       </table>
+
+      ${candDetailHTML ? `
+        <p class="algo-section-title" style="margin-top:12px">Detalle de candidatos (pistas mas restringidas)</p>
+        ${candDetailHTML}
+      ` : ''}
     </div>
+
     <div class="algo-legend-row">
       <span class="algo-legend-dot algo-cand-low"></span><span>1-2 opciones (muy restringido)</span>
       <span class="algo-legend-dot algo-cand-mid"></span><span>3-5 opciones</span>
-      <span class="algo-legend-dot algo-cand-hi"></span><span>6+ opciones (libre)</span>
+      <span class="algo-legend-dot algo-cand-hi"></span><span>6+ opciones</span>
     </div>
   `;
 
+  // ── Show modal ──
   backdrop.style.display = 'block';
   sheet.style.display = 'flex';
-  requestAnimationFrame(() => { sheet.classList.add('algo-sheet-open'); backdrop.classList.add('algo-sheet-open'); });
+  requestAnimationFrame(() => {
+    sheet.classList.add('algo-sheet-open');
+    backdrop.classList.add('algo-sheet-open');
+  });
 
   const close = () => {
-    sheet.classList.remove('algo-sheet-open'); backdrop.classList.remove('algo-sheet-open');
+    sheet.classList.remove('algo-sheet-open');
+    backdrop.classList.remove('algo-sheet-open');
     setTimeout(() => { sheet.style.display = 'none'; backdrop.style.display = 'none'; }, 300);
   };
-  document.getElementById('algo-close-btn').addEventListener('click', close);
-  backdrop.addEventListener('click', close);
+  document.getElementById('solve-info-close').addEventListener('click', close);
+  backdrop.onclick = close;
+}
+
+function _showVerifyInfoModal(result, grid) {
+  _showSolveInfoModal(result, grid);
 }
 
 function _showStepBar(result, config) {
