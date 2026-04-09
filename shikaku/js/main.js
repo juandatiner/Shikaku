@@ -4,7 +4,7 @@
  * Importa todos los módulos y arranca la UI.
  */
 
-import { initUI } from './ui.js?v=5';
+import { initUI } from './ui.js?v=13';
 
 // Iniciar la aplicación cuando el DOM esté listo
 if (document.readyState === 'loading') {

@@ -4,7 +4,7 @@
  * Utiliza canvas doble (fondo + overlay) para rendimiento.
  */
 
-import { REGION_COLORS, REGION_TEXT_COLORS, CELL_SIZE_LIMITS } from './constants.js?v=5';
+import { REGION_COLORS, REGION_TEXT_COLORS, CELL_SIZE_LIMITS } from './constants.js?v=13';
 
 /**
  * Clase principal del tablero de juego
@@ -635,29 +635,47 @@ export class Board {
     const area = w * h;
     const cs = this.cellSize;
 
-    // Determinar si es válido
-    let valid = false;
+    // Determinar estado: valid, violation (contiene otra pista), o invalid
+    let status = 'invalid'; // default
+    let clueCount = 0;
+    let matchingClue = false;
     for (let i = 0; i < this.clues.length; i++) {
       const cl = this.clues[i];
       if (cl.row >= r0 && cl.row <= r1 && cl.col >= c0 && cl.col <= c1) {
-        if (!this.playerRegions.has(i) && cl.value === area) {
-          // Verificar celdas no ocupadas
-          let cellsFree = true;
-          for (let rr = r0; rr <= r1 && cellsFree; rr++) {
-            for (let cc = c0; cc <= c1 && cellsFree; cc++) {
-              if (this.occupationMap[rr][cc] !== -1) cellsFree = false;
-            }
-          }
-          if (cellsFree) valid = true;
+        if (!this.playerRegions.has(i)) {
+          clueCount++;
+          if (cl.value === area) matchingClue = true;
         }
       }
     }
 
+    if (clueCount > 1 && matchingClue) {
+      // Área coincide con una pista pero encierra otra → violación
+      status = 'violation';
+    } else if (clueCount === 1 && matchingClue) {
+      // Exactamente una pista con área correcta → verificar celdas libres
+      let cellsFree = true;
+      for (let rr = r0; rr <= r1 && cellsFree; rr++) {
+        for (let cc = c0; cc <= c1 && cellsFree; cc++) {
+          if (this.occupationMap[rr][cc] !== -1) cellsFree = false;
+        }
+      }
+      if (cellsFree) status = 'valid';
+    }
+
+    // Colores según estado
+    const colors = {
+      valid:     { fill: 'rgba(76, 175, 80, 0.35)',  stroke: 'rgba(76, 175, 80, 0.8)',  text: 'rgba(46, 125, 50, 0.9)' },
+      violation: { fill: 'rgba(255, 152, 0, 0.35)',   stroke: 'rgba(255, 152, 0, 0.8)',   text: 'rgba(230, 81, 0, 0.9)' },
+      invalid:   { fill: 'rgba(244, 67, 54, 0.35)',   stroke: 'rgba(244, 67, 54, 0.8)',   text: 'rgba(198, 40, 40, 0.9)' }
+    };
+    const c = colors[status];
+
     const octx = this.octx;
-    octx.fillStyle = valid ? 'rgba(76, 175, 80, 0.35)' : 'rgba(244, 67, 54, 0.35)';
+    octx.fillStyle = c.fill;
     octx.fillRect(c0 * cs, r0 * cs, w * cs, h * cs);
 
-    octx.strokeStyle = valid ? 'rgba(76, 175, 80, 0.8)' : 'rgba(244, 67, 54, 0.8)';
+    octx.strokeStyle = c.stroke;
     octx.lineWidth = 2;
     octx.strokeRect(c0 * cs, r0 * cs, w * cs, h * cs);
 
@@ -666,7 +684,7 @@ export class Board {
     octx.font = `600 ${fontSize}px system-ui`;
     octx.textAlign = 'center';
     octx.textBaseline = 'middle';
-    octx.fillStyle = valid ? 'rgba(46, 125, 50, 0.9)' : 'rgba(198, 40, 40, 0.9)';
+    octx.fillStyle = c.text;
     octx.fillText(area.toString(), (c0 + w / 2) * cs, (r0 + h / 2) * cs);
   }
 

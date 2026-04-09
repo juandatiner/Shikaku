@@ -3,10 +3,10 @@
  * @description Navegación entre pantallas, eventos globales, tabs y lógica de UI.
  */
 
-import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=5';
-import { Board } from './board.js?v=5';
-import { getSizeForLevel, generatePuzzle } from './generator.js?v=5';
-import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=5';
+import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=13';
+import { Board } from './board.js?v=13';
+import { getSizeForLevel, generatePuzzle } from './generator.js?v=13';
+import { solve, extractClues, getCandidates, countSolutionsBT, validateSolution } from './solver.js?v=13';
 
 /** Estado global de la aplicación */
 const state = {
@@ -18,6 +18,7 @@ const state = {
   timer: null,
   timerSeconds: 0,
   solverWorker: null,
+  verifyWorker: null,
   solverResult: null,
   solutionIndex: 0,
   currentStep: 0,
@@ -806,6 +807,8 @@ function _bindGameEvents(config) {
   });
 
   // Pista: resuelve UNA pista automáticamente
+  // 1. Intenta sugerir una pista NO marcada con espacio libre
+  // 2. Si todas las no marcadas están bloqueadas, corrige una marcada incorrectamente
   document.getElementById('btn-hint').addEventListener('click', () => {
     if (!state.activeBoard || !state.currentClues) return;
     if (state.solverResult) return; // solucionador abierto
@@ -815,77 +818,83 @@ function _bindGameEvents(config) {
     const cols = grid[0].length;
     const board = state.activeBoard;
 
-    let bestIdx = -1;
+    // Resolver para saber las respuestas correctas
+    const result = solve(grid, clues, 1, 5000);
+    if (!result.solutions || result.solutions.length === 0) return;
+    const solution = result.solutions[0];
+
+    // Crear mapa de clueIdx → solución para búsqueda correcta
+    // (el array de solución NO está indexado por clueIdx)
+    const solByClue = new Map();
+    for (const entry of solution) {
+      const ci = clues.findIndex(c => c.row === entry.clue.row && c.col === entry.clue.col);
+      if (ci !== -1) solByClue.set(ci, entry.rect);
+    }
+
+    // Paso 1: buscar pistas NO marcadas con espacio libre
+    let targetIdx = -1;
     let bestCount = Infinity;
-    let bestCandidates = [];
 
     for (let i = 0; i < clues.length; i++) {
       if (board.playerRegions.has(i)) continue;
+      if (!solByClue.has(i)) continue;
+
       const cands = getCandidates(clues[i], rows, cols);
-      const validCands = [];
+      let validCount = 0;
       for (const rect of cands) {
         let free = true;
-        let containsOther = false;
-        for (let ci = 0; ci < clues.length; ci++) {
-          if (ci === i || board.playerRegions.has(ci)) continue;
-          const other = clues[ci];
-          if (other.row >= rect.r0 && other.row < rect.r0 + rect.h &&
-              other.col >= rect.c0 && other.col < rect.c0 + rect.w) {
-            containsOther = true;
-            break;
-          }
-        }
-        if (containsOther) continue;
         for (let r = rect.r0; r < rect.r0 + rect.h && free; r++) {
           for (let c = rect.c0; c < rect.c0 + rect.w && free; c++) {
             if (board.occupationMap[r][c] !== -1) free = false;
           }
         }
-        if (free) validCands.push(rect);
+        if (free) validCount++;
       }
-      if (validCands.length > 0 && validCands.length < bestCount) {
-        bestCount = validCands.length;
-        bestIdx = i;
-        bestCandidates = validCands;
+      if (validCount > 0 && validCount < bestCount) {
+        bestCount = validCount;
+        targetIdx = i;
       }
     }
 
-    if (bestIdx === -1) return;
-
-    // Resolver para encontrar el rect correcto
-    const result = solve(grid, clues, 1, 3000);
-    if (result.solutions.length > 0) {
-      const solEntry = result.solutions[0][bestIdx];
-      if (solEntry) {
-        const rect = solEntry.rect;
-        board.playerRegions.set(bestIdx, rect);
-        for (let r = rect.r0; r < rect.r0 + rect.h; r++) {
-          for (let c = rect.c0; c < rect.c0 + rect.w; c++) {
-            board.occupationMap[r][c] = bestIdx;
+    // Paso 2: si no hay pistas libres, buscar una marcada INCORRECTAMENTE y corregirla
+    if (targetIdx === -1) {
+      for (let i = 0; i < clues.length; i++) {
+        if (!board.playerRegions.has(i)) continue;
+        if (!solByClue.has(i)) continue;
+        const pRect = board.playerRegions.get(i);
+        const sRect = solByClue.get(i);
+        const isCorrect = pRect.r0 === sRect.r0 && pRect.c0 === sRect.c0 &&
+                          pRect.w === sRect.w && pRect.h === sRect.h;
+        if (!isCorrect) {
+          // Remover la región incorrecta
+          for (let r = pRect.r0; r < pRect.r0 + pRect.h; r++) {
+            for (let c = pRect.c0; c < pRect.c0 + pRect.w; c++) {
+              if (board.occupationMap[r][c] === i) {
+                board.occupationMap[r][c] = -1;
+              }
+            }
           }
+          board.playerRegions.delete(i);
+          targetIdx = i;
+          break;
         }
-        state.hintsUsed++;
-        board.render();
-        board.showHintPulse(bestIdx);
-        board._checkVictory();
-        return;
       }
     }
 
-    // Fallback
-    if (bestCandidates.length > 0) {
-      const rect = bestCandidates[0];
-      board.playerRegions.set(bestIdx, rect);
-      for (let r = rect.r0; r < rect.r0 + rect.h; r++) {
-        for (let c = rect.c0; c < rect.c0 + rect.w; c++) {
-          board.occupationMap[r][c] = bestIdx;
-        }
+    if (targetIdx === -1) return;
+
+    // Colocar la respuesta correcta
+    const solRect = solByClue.get(targetIdx);
+    board.playerRegions.set(targetIdx, solRect);
+    for (let r = solRect.r0; r < solRect.r0 + solRect.h; r++) {
+      for (let c = solRect.c0; c < solRect.c0 + solRect.w; c++) {
+        board.occupationMap[r][c] = targetIdx;
       }
-      state.hintsUsed++;
-      board.render();
-      board.showHintPulse(bestIdx);
-      board._checkVictory();
     }
+    state.hintsUsed++;
+    board.render();
+    board.showHintPulse(targetIdx);
+    board._checkVictory();
   });
 
   document.getElementById('btn-solve').addEventListener('click', () => _runSolver(config));
@@ -1357,14 +1366,19 @@ function _bindCreateEvents() {
   const rowsInput = document.getElementById('create-rows');
   const colsInput = document.getElementById('create-cols');
 
+  const clamp = (v) => Math.max(4, Math.min(40, parseInt(v) || 4));
+
   const autoGenerate = () => {
-    const rows = Math.max(4, Math.min(40, parseInt(rowsInput.value) || 4));
-    const cols = Math.max(4, Math.min(40, parseInt(colsInput.value) || 4));
-    _createEditableGrid(rows, cols);
+    _createEditableGrid(clamp(rowsInput.value), clamp(colsInput.value));
   };
 
+  // Actualizar grid mientras escribe
   rowsInput?.addEventListener('input', autoGenerate);
   colsInput?.addEventListener('input', autoGenerate);
+  // Al salir del campo, mostrar el valor real (clampear visualmente)
+  const fixDisplay = (input) => { input.value = clamp(input.value); };
+  rowsInput?.addEventListener('change', () => fixDisplay(rowsInput));
+  colsInput?.addEventListener('change', () => fixDisplay(colsInput));
   autoGenerate();
 }
 
@@ -1372,15 +1386,21 @@ function _createEditableGrid(rows, cols) {
   const container = document.getElementById('create-board-container');
   const isPC = window.innerWidth > 768;
   const maxCellSize = isPC ? 72 : 48;
+  const minCellSize = 24; // mínimo legible para 2+ dígitos
   const availableW = isPC ? Math.min(window.innerWidth * 0.5, 620) : window.innerWidth - 48;
-  const cellSize = Math.min(maxCellSize, Math.floor(availableW / cols));
+  const cellSize = Math.max(minCellSize, Math.min(maxCellSize, Math.floor(availableW / cols)));
+  const fontSize = Math.max(9, Math.floor(cellSize * 0.42));
   const maxValue = rows * cols;
 
-  let html = '<table class="editable-grid">';
+  // Scroll horizontal si el grid no cabe
+  const gridW = cellSize * cols;
+  container.style.overflowX = gridW > availableW ? 'auto' : 'hidden';
+
+  let html = `<table class="editable-grid" style="width:${gridW}px;table-layout:fixed">`;
   for (let r = 0; r < rows; r++) {
     html += '<tr>';
     for (let c = 0; c < cols; c++) {
-      html += `<td class="edit-cell" style="width:${cellSize}px;height:${cellSize}px;font-size:${Math.max(12, cellSize * 0.4)}px">
+      html += `<td class="edit-cell" style="width:${cellSize}px;height:${cellSize}px;font-size:${fontSize}px">
                 <input type="number" min="0" max="${maxValue}" value="" placeholder="0" class="cell-input" data-r="${r}" data-c="${c}">
               </td>`;
     }
@@ -1448,7 +1468,9 @@ function _createEditableGrid(rows, cols) {
     randomBtn.disabled = true;
     randomBtn.textContent = '⏳ Generando...';
     try {
-      const result = await generatePuzzle(rows, cols, 3);
+      // Área máx sube progresivamente: 10×10→40, 15→50, 20→60, 25→70, 30→80, 35→90, 40→100
+      const maxArea = Math.min(100, 20 + Math.min(rows, cols) * 2);
+      const result = await generatePuzzle(rows, cols, 3, false, maxArea);
       const inputs = container.querySelectorAll('.cell-input');
       inputs.forEach(input => {
         const r = parseInt(input.dataset.r);
@@ -1482,7 +1504,8 @@ function _readEditableGrid() {
 
 async function _verifyCreatedMap(grid) {
   const status = document.getElementById('create-status');
-  status.innerHTML = '<div class="verify-loading"><span class="spinner-inline spinner-dark"></span> Verificando...</div>';
+  const playBtn = document.getElementById('create-play');
+  const verifyBtn = document.getElementById('create-verify');
 
   const clues = extractClues(grid);
   if (clues.length === 0) {
@@ -1490,48 +1513,72 @@ async function _verifyCreatedMap(grid) {
     return;
   }
 
-  // Validar que ningún clue exceda el máximo posible
   const maxCell = grid.length * grid[0].length;
   const invalidClue = clues.find(c => c.value > maxCell);
   if (invalidClue) {
     status.innerHTML = `<span class="badge badge-red">Error: Número ${invalidClue.value} excede el máximo posible (${maxCell}). Revisa los números.</span>`;
-    document.getElementById('create-play').disabled = true;
+    playBtn.disabled = true;
     return;
   }
 
-  // Mostrar suma de pistas
   const sumClues = clues.reduce((s, c) => s + c.value, 0);
-  const expectedCells = grid.length * grid[0].length;
-  const sumStatus = sumClues === expectedCells
-    ? ` (suma correcta: ${sumClues}/${expectedCells})`
-    : ` (suma: ${sumClues}/${expectedCells})`;
+  const cells = grid.length * grid[0].length;
+  const sumStatus = sumClues === cells
+    ? ` (suma correcta: ${sumClues}/${cells})`
+    : ` (suma: ${sumClues}/${cells})`;
 
-  await new Promise(r => setTimeout(r, 50));
-  const result = solve(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs);
+  // Timeout escalado: 2s para pequeños, hasta 8s para grandes
+  const verifyTimeout = cells <= 900 ? 1000 : cells < 1600 ? 2000 : 6000;
 
-  await new Promise(r => setTimeout(r, 10));
-  const btResult = countSolutionsBT(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs);
+  // Terminate any previous verify worker
+  if (state.verifyWorker) { state.verifyWorker.terminate(); state.verifyWorker = null; }
 
-  const match = result.count === btResult.count;
-  const verifyNote = match
-    ? `<br><small style="color:#555">DLX: ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} (${result.stats.timeMs.toFixed(0)}ms) | BT: ${btResult.count.toLocaleString()}${btResult.timedOut ? '+' : ''} (${btResult.timeMs.toFixed(0)}ms) ✓</small>`
-    : `<br><small style="color:#c00">⚠ DLX: ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} (${result.stats.timeMs.toFixed(0)}ms) vs BT: ${btResult.count.toLocaleString()}${btResult.timedOut ? '+' : ''} (${btResult.timeMs.toFixed(0)}ms)</small>`;
+  verifyBtn.disabled = true;
+  status.innerHTML = '<div class="verify-loading"><span class="spinner-inline spinner-dark"></span> Verificando...</div>';
 
-  if (result.count === 1) {
-    status.innerHTML = `<span class="badge badge-green">✓ Válido con solución única${sumStatus}</span>${verifyNote}`;
-    document.getElementById('create-play').disabled = false;
-  } else if (result.count === 0) {
-    status.innerHTML = `<span class="badge badge-red">✗ Sin solución. Revisa los números.</span>${verifyNote}`;
-    document.getElementById('create-play').disabled = true;
-  } else if (result.count >= 2) {
-    status.innerHTML = `<span class="badge badge-green">✓ Válido con ${result.count.toLocaleString()} soluciones encontradas${sumStatus}</span>${verifyNote}`;
-    document.getElementById('create-play').disabled = false;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      state.verifyWorker = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
+      state.verifyWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'PROGRESS') {
+          const n = msg.nodesExplored;
+          const nodes = n > 1e6 ? `${(n/1e6).toFixed(1)}M nodos` : n > 1e3 ? `${(n/1e3).toFixed(0)}K nodos` : `${n} nodos`;
+          status.innerHTML = `<div class="verify-loading"><span class="spinner-inline spinner-dark"></span> Verificando... ${nodes}</div>`;
+        } else if (msg.type === 'DONE') {
+          state.verifyWorker.terminate(); state.verifyWorker = null;
+          resolve(msg.result);
+        } else if (msg.type === 'ERROR') {
+          state.verifyWorker.terminate(); state.verifyWorker = null;
+          reject(new Error(msg.error));
+        }
+      };
+      state.verifyWorker.onerror = (err) => { state.verifyWorker = null; reject(err); };
+      state.verifyWorker.postMessage({ type: 'SOLVE', grid, clues, maxSolutions: Infinity, timeoutMs: verifyTimeout });
+    });
+
+    const countText = result.count.toLocaleString() + (result.timedOut ? '+' : '');
+    const verifyNote = `<br><small style="color:#555">DLX: ${countText} (${result.stats.timeMs.toFixed(0)}ms)</small>`;
+
+    if (result.count >= 1) {
+      const label = result.count === 1 && !result.timedOut ? 'solución única' : `${countText} soluciones`;
+      status.innerHTML = `<span class="badge badge-green">✓ Válido con ${label}${sumStatus}</span>${verifyNote}`;
+      playBtn.disabled = false;
+    } else {
+      status.innerHTML = `<span class="badge badge-red">✗ Sin solución. Revisa los números.</span>${verifyNote}`;
+      playBtn.disabled = true;
+    }
+  } catch (err) {
+    status.innerHTML = `<span class="badge badge-red">Error al verificar: ${err.message}</span>`;
+  } finally {
+    verifyBtn.disabled = false;
   }
 }
 
 async function _verifyUploadedMap(grid) {
   const status = document.getElementById('upload-preview');
   const verifyBtn = document.getElementById('upload-verify');
+  const playBtn = document.getElementById('upload-play');
 
   const clues = extractClues(grid);
   if (clues.length === 0) {
@@ -1539,48 +1586,69 @@ async function _verifyUploadedMap(grid) {
     return;
   }
 
-  // Validar que ningún clue exceda el máximo posible
   const maxCell = grid.length * grid[0].length;
   const invalidClue = clues.find(c => c.value > maxCell);
   if (invalidClue) {
     status.innerHTML += `<div class="verify-result"><span class="badge badge-red">Error: Número ${invalidClue.value} excede el máximo posible (${maxCell}).</span></div>`;
-    document.getElementById('upload-play').disabled = true;
+    playBtn.disabled = true;
     return;
   }
 
-  // Mostrar suma de pistas
   const sumClues = clues.reduce((s, c) => s + c.value, 0);
-  const expectedCells = grid.length * grid[0].length;
-  const sumStatus = sumClues === expectedCells
-    ? ` (suma correcta: ${sumClues}/${expectedCells})`
-    : ` (suma: ${sumClues}/${expectedCells})`;
+  const cells = grid.length * grid[0].length;
+  const sumStatus = sumClues === cells
+    ? ` (suma correcta: ${sumClues}/${cells})`
+    : ` (suma: ${sumClues}/${cells})`;
+
+  const verifyTimeout = cells <= 900 ? 1000 : cells < 1600 ? 2000 : 6000;
+
+  // Terminate any previous verify worker
+  if (state.verifyWorker) { state.verifyWorker.terminate(); state.verifyWorker = null; }
 
   verifyBtn.disabled = true;
   verifyBtn.innerHTML = '<span class="spinner-inline spinner-dark"></span> Verificando...';
 
-  await new Promise(r => setTimeout(r, 50));
-  const result = solve(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs);
+  // Remove any previous verify result
+  const prev = status.querySelector('.verify-result');
+  if (prev) prev.remove();
 
-  await new Promise(r => setTimeout(r, 10));
-  const btResult = countSolutionsBT(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs);
+  try {
+    const result = await new Promise((resolve, reject) => {
+      state.verifyWorker = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
+      state.verifyWorker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'PROGRESS') {
+          const n = msg.nodesExplored;
+          const nodes = n > 1e6 ? `${(n/1e6).toFixed(1)}M nodos` : n > 1e3 ? `${(n/1e3).toFixed(0)}K nodos` : `${n} nodos`;
+          verifyBtn.innerHTML = `<span class="spinner-inline spinner-dark"></span> ${nodes}`;
+        } else if (msg.type === 'DONE') {
+          state.verifyWorker.terminate(); state.verifyWorker = null;
+          resolve(msg.result);
+        } else if (msg.type === 'ERROR') {
+          state.verifyWorker.terminate(); state.verifyWorker = null;
+          reject(new Error(msg.error));
+        }
+      };
+      state.verifyWorker.onerror = (err) => { state.verifyWorker = null; reject(err); };
+      state.verifyWorker.postMessage({ type: 'SOLVE', grid, clues, maxSolutions: Infinity, timeoutMs: verifyTimeout });
+    });
 
-  verifyBtn.disabled = false;
-  verifyBtn.innerHTML = 'Verificar mapa';
+    const countText = result.count.toLocaleString() + (result.timedOut ? '+' : '');
+    const verifyNote = `<br><small style="color:#555">DLX: ${countText} (${result.stats.timeMs.toFixed(0)}ms)</small>`;
 
-  const match = result.count === btResult.count;
-  const verifyNote = match
-    ? `<br><small style="color:#555">DLX: ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} (${result.stats.timeMs.toFixed(0)}ms) | BT: ${btResult.count.toLocaleString()}${btResult.timedOut ? '+' : ''} (${btResult.timeMs.toFixed(0)}ms) ✓</small>`
-    : `<br><small style="color:#c00">⚠ DLX: ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} (${result.stats.timeMs.toFixed(0)}ms) vs BT: ${btResult.count.toLocaleString()}${btResult.timedOut ? '+' : ''} (${btResult.timeMs.toFixed(0)}ms)</small>`;
-
-  if (result.count === 1) {
-    status.innerHTML += `<div class="verify-result"><span class="badge badge-green">✓ Válido con solución única${sumStatus}</span>${verifyNote}</div>`;
-    document.getElementById('upload-play').disabled = false;
-  } else if (result.count === 0) {
-    status.innerHTML += `<div class="verify-result"><span class="badge badge-red">✗ Sin solución.</span>${verifyNote}</div>`;
-    document.getElementById('upload-play').disabled = true;
-  } else if (result.count >= 2) {
-    status.innerHTML += `<div class="verify-result"><span class="badge badge-green">✓ Válido con ${result.count.toLocaleString()} soluciones encontradas${sumStatus}</span>${verifyNote}</div>`;
-    document.getElementById('upload-play').disabled = false;
+    if (result.count >= 1) {
+      const label = result.count === 1 && !result.timedOut ? 'solución única' : `${countText} soluciones`;
+      status.innerHTML += `<div class="verify-result"><span class="badge badge-green">✓ Válido con ${label}${sumStatus}</span>${verifyNote}</div>`;
+      playBtn.disabled = false;
+    } else {
+      status.innerHTML += `<div class="verify-result"><span class="badge badge-red">✗ Sin solución.</span>${verifyNote}</div>`;
+      playBtn.disabled = true;
+    }
+  } catch (err) {
+    status.innerHTML += `<div class="verify-result"><span class="badge badge-red">Error al verificar: ${err.message}</span></div>`;
+  } finally {
+    verifyBtn.disabled = false;
+    verifyBtn.innerHTML = 'Verificar mapa';
   }
 }
 

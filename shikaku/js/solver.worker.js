@@ -4,7 +4,7 @@
  * Recibe mensajes SOLVE y CANCEL, envía PROGRESS y DONE.
  */
 
-import { solve, extractClues } from './solver.js?v=5';
+import { solve, extractClues } from './solver.js?v=13';
 
 let cancelled = false;
 
