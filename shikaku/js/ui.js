@@ -3,10 +3,10 @@
  * @description Navegación entre pantallas, eventos globales, tabs y lógica de UI.
  */
 
-import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=29';
-import { Board } from './board.js?v=29';
-import { getSizeForLevel, generatePuzzle } from './generator.js?v=29';
-import { solve, extractClues, getCandidates, getFactorizations, countSolutionsBT, validateSolution } from './solver.js?v=29';
+import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=37';
+import { Board } from './board.js?v=37';
+import { getSizeForLevel, generatePuzzle } from './generator.js?v=37';
+import { solve, extractClues, getCandidates, getFactorizations, countSolutionsBT, validateSolution } from './solver.js?v=37';
 
 /** Estado global de la aplicación */
 const state = {
@@ -31,6 +31,13 @@ const state = {
   isCustomMap: false,
   activeCustomMapId: null,
   uploadedGrid: null,  // grid del mapa subido actualmente (para re-chequear duplicados)
+  streamedSolutions: [],   // soluciones reportadas progresivamente por el worker
+  streamedCount: 0,        // contador total visto en streaming
+  streamedShown: false,    // ya se mostró al menos la primera solución progresiva
+  pendingFinalBar: null,   // { result, config } pendiente de pintar al terminar el autoplay
+  streamQueue: [],         // counts pendientes de pintar (stagger visible)
+  streamTimer: null,       // setTimeout id para procesar streamQueue
+  streamFinalTransition: null, // callback al drenar la cola de streaming
 };
 
 // ══════════════════════════════════════════════════════════
@@ -928,16 +935,14 @@ function _bindGameEvents(config) {
 
     if (targetIdx === -1) return;
 
-    // Colocar la respuesta correcta
+    // Colocar la respuesta correcta. Usamos placeRegionForced para que
+    // cualquier región que se cruce con el rect de la pista (por ejemplo,
+    // una colocación incorrecta previa del jugador) sea eliminada por
+    // completo — así no queda ningún "artefacto" visual de la región
+    // anterior en celdas que no están cubiertas por la nueva.
     const solRect = solByClue.get(targetIdx);
-    board.playerRegions.set(targetIdx, solRect);
-    for (let r = solRect.r0; r < solRect.r0 + solRect.h; r++) {
-      for (let c = solRect.c0; c < solRect.c0 + solRect.w; c++) {
-        board.occupationMap[r][c] = targetIdx;
-      }
-    }
+    board.placeRegionForced(targetIdx, solRect);
     state.hintsUsed++;
-    board.render();
     board.showHintPulse(targetIdx);
     board._checkVictory();
   });
@@ -984,13 +989,27 @@ async function _runSolver(config) {
   const grid = state.currentGrid;
   const clues = state.currentClues;
 
+  // Reset progressive state
+  state.streamedSolutions = [];
+  state.streamedCount = 0;
+  state.streamedShown = false;
+  state.pendingFinalBar = null;
+  _flushStreamQueue();
+
+  const onSolutionFound = (sol, count) => {
+    state.streamedCount = count;
+    if (sol) state.streamedSolutions.push(sol);
+    _onProgressiveSolution(sol, count, config);
+  };
+
   try {
     if (window.Worker) {
-      const result = await _solveInWorker(grid, clues);
+      const result = await _solveInWorker(grid, clues, onSolutionFound);
       _onSolverDone(result, config);
     } else {
       await new Promise(r => setTimeout(r, 0));
-      const result = solve(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs);
+      const result = solve(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs, null,
+        (sol, count) => onSolutionFound(sol, count));
       _onSolverDone(result, config);
     }
   } catch (err) {
@@ -1000,7 +1019,119 @@ async function _runSolver(config) {
   }
 }
 
-function _solveInWorker(grid, clues) {
+/** HTML del icono "buscando" usado como sustituto de un número desconocido. */
+const _SEARCHING_ICON = '<span class="spinner-mini" title="Buscando más soluciones…" aria-label="buscando"></span>';
+
+/**
+ * Manejador de soluciones progresivas reportadas por el solver en vivo.
+ * Muestra la primera solución en el tablero inmediatamente, reproduciéndola
+ * paso a paso, y actualiza el contador "1/⏳ (N ⏳)" en la misma barra de
+ * pasos completa (con todos los controles de reproducción). Cuando llegan
+ * más soluciones, el contador se actualiza en sitio sin reconstruir la
+ * barra, así la reproducción no se ve interrumpida.
+ */
+function _onProgressiveSolution(sol, count, config) {
+  if (!state.activeBoard) return;
+
+  // Primera solución: mostrarla ya en el tablero, paso a paso (autoplay).
+  if (sol && !state.streamedShown) {
+    state.streamedShown = true;
+    state.solverResult = {
+      solutions: state.streamedSolutions.slice(),
+      // Forzamos count=1 en el primer render aunque el worker ya haya
+      // descubierto más: así el usuario ve el contador empezar en 1 y
+      // crecer con stagger (ver `_enqueueStreamCount`).
+      count: 1,
+      timedOut: false,
+      stats: { timeMs: 0, nodesExplored: 0, backtracks: 0, prunedBranches: 0, clueOrder: [], perClue: [] },
+      _streaming: true
+    };
+    state.solutionIndex = 0;
+    state.activeBoard.recolorWithSolution(sol);
+    state.activeBoard.lock();
+    state.currentStep = 0;
+    state.activeBoard.showSolutionStep(sol, 0);
+    // Mostrar la barra completa en modo "streaming": mismos botones de
+    // reproducción, pero con spinners donde irían los totales desconocidos.
+    _showStepBar(state.solverResult, config);
+    // Reproducir la solución poco a poco mientras el solver sigue buscando
+    _startAutoPlay(state.solverResult);
+    // Si el worker ya había descubierto más soluciones antes de que
+    // diera tiempo a pintar el primer render (muy común en puzzles
+    // pequeños donde todo llega en ráfaga), encolamos el count real
+    // para que se vea creciendo en vez de saltar directamente.
+    if (count > 1) _enqueueStreamCount(count);
+  } else if (state.streamedShown) {
+    _enqueueStreamCount(count);
+    const btn = document.getElementById('btn-solve');
+    if (btn) {
+      const bt = btn.querySelector('.btn-text');
+      if (bt) bt.textContent = `Resolviendo... ${count.toLocaleString()} sol.`;
+    }
+  }
+}
+
+// Delay mínimo entre actualizaciones visibles del contador en streaming.
+// Sin esto, cuando un puzzle se resuelve en pocos ms el browser pinta
+// una sola vez y el usuario sólo ve el número final (p.ej. "6") sin
+// animación de crecimiento. Con stagger el usuario ve 1→2→3→...
+const _STREAM_STAGGER_MS = 140;
+
+/**
+ * Encola un nuevo conteo de soluciones para pintarlo con stagger visible.
+ * Si no hay un timer activo, arranca uno; si ya hay, la cola se procesará
+ * cuando llegue su turno.
+ */
+function _enqueueStreamCount(count) {
+  // Deduplicar: si el último de la cola ya es >= count, ignorar
+  const last = state.streamQueue.length > 0
+    ? state.streamQueue[state.streamQueue.length - 1]
+    : (state.solverResult?.count ?? 0);
+  if (count <= last) return;
+  // Encolar incrementos de 1 en 1 para ver cada número individualmente
+  for (let n = last + 1; n <= count; n++) state.streamQueue.push(n);
+  if (!state.streamTimer) _processStreamQueue();
+}
+
+function _processStreamQueue() {
+  if (state.streamQueue.length === 0) {
+    state.streamTimer = null;
+    // Si al drenar la cola queda una transición pendiente (p.ej. el solver
+    // terminó mientras el stream todavía crecía), la ejecutamos ahora.
+    const fn = state.streamFinalTransition;
+    if (fn) {
+      state.streamFinalTransition = null;
+      try { fn(); } catch {}
+    }
+    return;
+  }
+  const next = state.streamQueue.shift();
+  if (state.solverResult) state.solverResult.count = next;
+  _updateStreamingCount(next);
+  state.streamTimer = setTimeout(_processStreamQueue, _STREAM_STAGGER_MS);
+}
+
+/** Drena la cola de streaming inmediatamente (usado al cancelar / cambiar de puzzle). */
+function _flushStreamQueue() {
+  if (state.streamTimer) { clearTimeout(state.streamTimer); state.streamTimer = null; }
+  state.streamQueue = [];
+  state.streamFinalTransition = null;
+}
+
+/**
+ * Actualiza el contador del bar de pasos durante el streaming. El número
+ * de la solución actual se muestra como "1", el total como spinner, y el
+ * conteo absoluto seguido del mismo spinner.
+ */
+function _updateStreamingCount(count) {
+  const solNumEl = document.getElementById('step-sol-num');
+  if (!solNumEl) return;
+  solNumEl.innerHTML =
+    `${state.solutionIndex + 1}/${_SEARCHING_ICON} ` +
+    `<small>(${count.toLocaleString()} ${_SEARCHING_ICON})</small>`;
+}
+
+function _solveInWorker(grid, clues, onSolutionFound) {
   return new Promise((resolve, reject) => {
     if (state.solverWorker) state.solverWorker.terminate();
 
@@ -1016,6 +1147,8 @@ function _solveInWorker(grid, clues) {
           ? `${(msg.nodesExplored / 1e3).toFixed(0)}K`
           : msg.nodesExplored;
         btn.querySelector('.btn-text').textContent = `Resolviendo... ${nodes} nodos`;
+      } else if (msg.type === 'SOLUTION_FOUND') {
+        if (onSolutionFound) onSolutionFound(msg.solution, msg.count);
       } else if (msg.type === 'DONE') {
         resolve(msg.result);
       } else if (msg.type === 'ERROR') {
@@ -1033,9 +1166,45 @@ function _solveInWorker(grid, clues) {
   });
 }
 
+/**
+ * Ejecuta el cross-check con backtracking en un worker dedicado. Esta
+ * verificación es MUY costosa (puede tardar segundos) y si corriera en
+ * el main thread bloquearía el setInterval del autoplay, interrumpiendo
+ * la reproducción paso a paso justo cuando el usuario quiere verla.
+ */
+function _verifyBtInWorker(grid, clues, maxCount, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    // Usamos un worker independiente para no pisar al solver principal
+    const w = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
+    const timer = setTimeout(() => {
+      try { w.terminate(); } catch {}
+      reject(new Error('verify timeout'));
+    }, (timeoutMs ?? 15000) + 2000);
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'BT_DONE') {
+        clearTimeout(timer);
+        try { w.terminate(); } catch {}
+        resolve(msg.result);
+      } else if (msg.type === 'ERROR') {
+        clearTimeout(timer);
+        try { w.terminate(); } catch {}
+        reject(new Error(msg.error));
+      }
+    };
+    w.onerror = (err) => {
+      clearTimeout(timer);
+      try { w.terminate(); } catch {}
+      reject(err);
+    };
+    w.postMessage({ type: 'VERIFY_BT', grid, clues, maxCount, timeoutMs });
+  });
+}
+
 function _onSolverDone(result, config) {
   if (!state.activeBoard) return;
 
+  const wasStreaming = state.streamedShown === true;
   state.solverResult = result;
   state.gameInProgress = false;
   _stopTimer();
@@ -1055,14 +1224,22 @@ function _onSolverDone(result, config) {
     const sol = result.solutions[0];
     state.activeBoard.recolorWithSolution(sol);
     state.activeBoard.lock();
-    state.currentStep = 0;
-    state.activeBoard.showSolutionStep(sol, 0);
+    // Si no hubo streaming, reiniciar paso y hacer autoplay desde 0.
+    // Si hubo streaming, NO interrumpir la reproducción "poco a poco":
+    //   - si la reproducción ya terminó, mostramos el último paso;
+    //   - si sigue corriendo, dejamos que llegue al final por sí sola.
+    if (!wasStreaming) {
+      state.currentStep = 0;
+      state.activeBoard.showSolutionStep(sol, 0);
+    } else if (!state.autoPlaying) {
+      state.currentStep = sol.length;
+      state.activeBoard.showSolutionStep(sol, sol.length);
+    }
   }
 
-  // Verificación: validar soluciones almacenadas + conteo BT
+  // Verificación: validar soluciones almacenadas (rápido, síncrono)
   const grid = state.activeBoard?.grid;
   if (grid) {
-    // 1. Validar cada solución almacenada
     let allValid = true;
     for (const sol of result.solutions) {
       const v = validateSolution(grid, sol);
@@ -1070,26 +1247,70 @@ function _onSolverDone(result, config) {
     }
     result.solutionsValid = allValid;
 
-    // 2. Conteo cruzado con BT
+    // Conteo cruzado con BT: se lanza en un worker aparte para NO
+    // bloquear el main thread (si corriera inline, el `setInterval`
+    // del autoplay quedaría congelado varios segundos y el usuario
+    // vería al solver "pensando" antes de arrancar la animación).
     const clues = extractClues(grid);
-    const btResult = countSolutionsBT(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs);
-    result.btCount = btResult.count;
-    result.btTimedOut = btResult.timedOut;
-    result.btTimeMs = btResult.timeMs;
+    _verifyBtInWorker(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs)
+      .then(bt => {
+        result.btCount = bt.count;
+        result.btTimedOut = bt.timedOut;
+        result.btTimeMs = bt.timeMs;
+      })
+      .catch(() => { /* verificación cross-check es opcional */ });
   }
 
-  _showStepBar(result, config);
+  // Si el streaming disparó el autoplay y aún sigue corriendo, mantener la
+  // barra de streaming visible (con su indicador de "en proceso") hasta que
+  // la reproducción termine. La barra final se construirá entonces desde
+  // el propio tick del autoplay, usando `state.pendingFinalBar`.
+  if (wasStreaming && state.autoPlaying && result.solutions.length > 0) {
+    state.pendingFinalBar = { result, config };
 
-  if (result.solutions.length > 0) {
-    _startAutoPlay(result);
+    // Nos aseguramos de que el conteo animado llegue hasta el total real
+    // antes de cambiar a la presentación "final" (N conocido). Si ya
+    // llegó, la transición se aplica inmediatamente.
+    _enqueueStreamCount(result.count);
+
+    const applyFinalCount = () => {
+      const solNumEl = document.getElementById('step-sol-num');
+      if (!solNumEl) return;
+      const c = result.count.toLocaleString();
+      const total = result.solutions.length;
+      solNumEl.innerHTML =
+        `${state.solutionIndex + 1}/${total} ` +
+        `<small>(${c} ${_SEARCHING_ICON})</small>`;
+      solNumEl.title = `${c} soluciones encontradas — reproduciendo…`;
+    };
+
+    if (state.streamQueue.length === 0 && !state.streamTimer) {
+      applyFinalCount();
+    } else {
+      state.streamFinalTransition = applyFinalCount;
+    }
+  } else {
+    _flushStreamQueue();
+    _showStepBar(result, config);
+    if (result.solutions.length > 0 && !wasStreaming) {
+      _startAutoPlay(result);
+    }
   }
+
+  // Reset del estado de streaming para el próximo run
+  state.streamedShown = false;
+  state.streamedSolutions = [];
+  state.streamedCount = 0;
 }
 
 function _startAutoPlay(result) {
-  const autoBtn = document.getElementById('step-auto');
   if (state.autoPlaying) return;
   state.autoPlaying = true;
-  if (autoBtn) autoBtn.innerHTML = ICONS.PAUSE;
+  // El botón step-auto puede reemplazarse a mitad del autoplay (p.ej. al
+  // pintar la barra final), por eso lo consultamos por ID en cada tick
+  // en vez de capturarlo en el closure.
+  const curBtn = document.getElementById('step-auto');
+  if (curBtn) curBtn.innerHTML = ICONS.PAUSE;
 
   state.autoPlayInterval = setInterval(() => {
     const sol = result.solutions[state.solutionIndex];
@@ -1097,7 +1318,16 @@ function _startAutoPlay(result) {
       clearInterval(state.autoPlayInterval);
       state.autoPlayInterval = null;
       state.autoPlaying = false;
-      if (autoBtn) autoBtn.innerHTML = ICONS.PLAY;
+      const btn = document.getElementById('step-auto');
+      if (btn) btn.innerHTML = ICONS.PLAY;
+      // Si había una barra final pendiente (porque el solver terminó
+      // mientras el autoplay seguía), la pintamos ahora para reflejar los
+      // totales definitivos y habilitar la navegación entre soluciones.
+      if (state.pendingFinalBar) {
+        const { result: finalResult, config: finalConfig } = state.pendingFinalBar;
+        state.pendingFinalBar = null;
+        _showStepBar(finalResult, finalConfig);
+      }
       return;
     }
     if (!state.activeBoard) { _stopAutoPlay(); return; }
@@ -1116,6 +1346,14 @@ function _stopAutoPlay() {
   state.autoPlaying = false;
   const autoBtn = document.getElementById('step-auto');
   if (autoBtn) autoBtn.innerHTML = ICONS.PLAY;
+  // Si el usuario pausa la reproducción durante streaming, pasamos ya a la
+  // barra final para que pueda navegar entre soluciones sin tener que
+  // esperar a que termine el autoplay.
+  if (state.pendingFinalBar) {
+    const { result: finalResult, config: finalConfig } = state.pendingFinalBar;
+    state.pendingFinalBar = null;
+    _showStepBar(finalResult, finalConfig);
+  }
 }
 
 function _showAlgoModal(result) {
@@ -1499,23 +1737,40 @@ function _showStepBar(result, config) {
   const hintBtn = document.getElementById('btn-hint');
   if (hintBtn) { hintBtn.disabled = true; hintBtn.title = 'No disponible mientras el solucionador está abierto'; }
 
+  const streaming = result._streaming === true;
   const totalSolutions = result.solutions.length;
   const sol = result.solutions[state.solutionIndex];
   const totalSteps = sol.length;
 
   const countLabel = result.count.toLocaleString();
   const timedOutNote = result.timedOut ? '+' : '';
-  const navLabel = `${state.solutionIndex + 1}/${totalSolutions}`;
-  const countTitle = result.timedOut
-    ? `Tiempo límite alcanzado — ${countLabel}+ soluciones encontradas, puede haber más`
-    : `${countLabel} solución${result.count !== 1 ? 'es' : ''} encontrada${result.count !== 1 ? 's' : ''}`;
+
+  // En modo streaming mostramos un spinner en vez del número total
+  // desconocido (tanto para el "N/total" de solución como para el contador
+  // total entre paréntesis). Una vez el solver termina, los spinners son
+  // sustituidos por los valores finales al volver a renderizar la barra.
+  const navLabel = streaming
+    ? `${state.solutionIndex + 1}/${_SEARCHING_ICON}`
+    : `${state.solutionIndex + 1}/${totalSolutions}`;
+  const countBody = streaming
+    ? `${countLabel} ${_SEARCHING_ICON}`
+    : `${countLabel}${timedOutNote}`;
+  const countTitle = streaming
+    ? `Buscando más soluciones… ${countLabel} encontrada${result.count !== 1 ? 's' : ''} hasta ahora`
+    : (result.timedOut
+      ? `Tiempo límite alcanzado — ${countLabel}+ soluciones encontradas, puede haber más`
+      : `${countLabel} solución${result.count !== 1 ? 'es' : ''} encontrada${result.count !== 1 ? 's' : ''}`);
+
+  // Durante streaming no mostramos los botones de navegación entre
+  // soluciones (sólo hay 1 almacenada aún), pero sí los de reproducción.
+  const showSolNav = !streaming && totalSolutions > 1;
 
   bar.innerHTML = `
     <div class="step-controls">
       <span class="step-sol-nav">
-        ${totalSolutions > 1 ? `<button class="step-btn" id="step-sol-prev">${ICONS.PREV}</button>` : ''}
-        <span id="step-sol-num" class="step-sol-count" title="${countTitle}">${navLabel} <small>(${countLabel}${timedOutNote})</small></span>
-        ${totalSolutions > 1 ? `<button class="step-btn" id="step-sol-next">${ICONS.NEXT}</button>` : ''}
+        ${showSolNav ? `<button class="step-btn" id="step-sol-prev">${ICONS.PREV}</button>` : ''}
+        <span id="step-sol-num" class="step-sol-count" title="${countTitle}">${navLabel} <small>(${countBody})</small></span>
+        ${showSolNav ? `<button class="step-btn" id="step-sol-next">${ICONS.NEXT}</button>` : ''}
       </span>
       <span class="step-sep">|</span>
       <button class="step-btn" id="step-first">${ICONS.FIRST}</button>
@@ -1638,8 +1893,11 @@ function _startTimer() {
 }
 
 function _stopTimer() {
+  // Detiene SOLO el cronómetro de la partida. La reproducción automática
+  // del solver (autoplay) tiene su propio ciclo y NO debe ser detenida
+  // aquí — de lo contrario el "paso a paso" se interrumpe y _onSolverDone
+  // termina saltando al último paso.
   if (state.timer) { clearInterval(state.timer); state.timer = null; }
-  if (state.autoPlayInterval) { clearInterval(state.autoPlayInterval); state.autoPlayInterval = null; state.autoPlaying = false; }
 }
 
 function _formatTime(seconds) {
@@ -1654,6 +1912,8 @@ function _formatTime(seconds) {
 
 function _goHome() {
   _stopTimer();
+  _stopAutoPlay();
+  _flushStreamQueue();
   if (state.activeBoard) { state.activeBoard.destroy(); state.activeBoard = null; }
   state.gameInProgress = false;
   state.currentScreen = 'home';
@@ -2191,10 +2451,49 @@ function _termLog(outputEl, html) {
   outputEl.parentElement.scrollTop = outputEl.parentElement.scrollHeight;
 }
 
+/**
+ * Formatea un tiempo en milisegundos con unidad incluida.
+ * Siempre devuelve una cadena con sufijo ("ms", "µs" o "s").
+ * El llamador NO debe añadir " ms" extra.
+ */
 function _fmtTime(ms) {
-  if (ms < 1) return ms.toFixed(6);
-  if (ms < 1000) return ms.toFixed(4);
-  return (ms / 1000).toFixed(4) + 's';
+  if (!isFinite(ms) || ms < 0) return '0ms';
+  if (ms < 0.001) return (ms * 1000).toFixed(3) + 'µs';
+  if (ms < 1)    return ms.toFixed(3) + 'ms';
+  if (ms < 1000) return ms.toFixed(3) + 'ms';
+  return (ms / 1000).toFixed(3) + 's';
+}
+
+/**
+ * Renderiza una solución como mapa ASCII para mostrarla en la terminal.
+ * Cada región se identifica con un carácter único (A-Z, a-z, 0-9).
+ */
+function _solutionToAscii(solution, rows, cols, grid) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const map = Array.from({ length: rows }, () => new Array(cols).fill('.'));
+  for (let i = 0; i < solution.length; i++) {
+    const { rect } = solution[i];
+    const ch = chars[i % chars.length];
+    for (let r = rect.r0; r < rect.r0 + rect.h; r++) {
+      for (let c = rect.c0; c < rect.c0 + rect.w; c++) {
+        map[r][c] = ch;
+      }
+    }
+  }
+  // Marcar las pistas con su valor (sobreescribe char de región)
+  if (grid) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (grid[r][c] > 0) map[r][c] = String(grid[r][c]);
+      }
+    }
+  }
+  // Ancho uniforme para alinear columnas
+  let maxLen = 1;
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (map[r][c].length > maxLen) maxLen = map[r][c].length;
+  return map.map(row => '  ' + row.map(cell => cell.padStart(maxLen, ' ')).join(' ')).join('\n');
 }
 
 function _handleCompeteCmd() {
@@ -2241,20 +2540,53 @@ function _handleCompeteCmd() {
     _termLog(outputEl, `  <span class="c-dim">clear</span>                    limpiar terminal`);
     _termLog(outputEl, '');
   } else if (raw.startsWith('./shikaku-dlx')) {
-    // Resolver
+    // Resolver — medimos tiempo real desde la UI y ejecutamos en el hilo
+    // principal, pero con un yield previo para que el "solving..." se pinte.
     cmdInput.disabled = true;
     _termLog(outputEl, `  <span class="c-dim">solving...</span>`);
 
+    // Marcador para poder reemplazar la línea "solving..." cuando llegue la
+    // primera solución (streaming)
+    const solvingLineIdx = outputEl.children.length - 1;
+    const tStart = performance.now();
+    let firstShownAt = null;
+    let lastProgressCount = 0;
+
+    const onSolution = (sol, count) => {
+      lastProgressCount = count;
+      if (sol && firstShownAt === null) {
+        firstShownAt = performance.now() - tStart;
+        _termLog(outputEl,
+          `  <span class="c-ok">✓ primera solución</span> <span class="c-time">${_fmtTime(firstShownAt)}</span> <span class="c-dim">(buscando más…)</span>`);
+      }
+    };
+
+    // Ceder al navegador para que el mensaje "solving..." se renderice
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const result = solve(grid, clues, 1, 60000);
-        const ms = result.stats.timeMs;
+        const result = solve(grid, clues, Infinity, 60000, null, onSolution);
+        const elapsed = performance.now() - tStart;
+        const ms = result.stats.timeMs;   // tiempo puro del solver
         const nodes = result.stats.nodesExplored;
+        const countLabel = result.count.toLocaleString() + (result.timedOut ? '+' : '');
 
         if (result.count >= 1) {
-          _termLog(outputEl, `  <span class="c-ok">✓ solved</span> <span class="c-time">${_fmtTime(ms)} ms</span>`);
-          _termLog(outputEl, `  <span class="c-dim">${nodes.toLocaleString()} nodos | ${ms > 0 ? Math.round(nodes / ms * 1000).toLocaleString() : '∞'} nodos/s</span>`);
+          _termLog(outputEl,
+            `  <span class="c-ok">✓ solved</span> <span class="c-time">${_fmtTime(ms)}</span> <span class="c-dim">(total UI: ${_fmtTime(elapsed)})</span>`);
+          _termLog(outputEl,
+            `  <span class="c-dim">${nodes.toLocaleString()} nodos | ${ms > 0 ? Math.round(nodes / ms * 1000).toLocaleString() : '∞'} nodos/s</span>`);
+          _termLog(outputEl,
+            `  <span class="c-dim">soluciones: ${countLabel} · almacenadas: ${result.solutions.length}${result.timedOut ? ' · ⏱ timeout' : ''}</span>`);
           _competeState.solved = true;
+
+          // Mostrar la primera solución como mapa ASCII
+          const firstSol = result.solutions[0];
+          if (firstSol) {
+            _termLog(outputEl, '');
+            _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">./shikaku-dlx ${fileName} --print</span>`);
+            _termLog(outputEl,
+              `<pre class="c-map">${_solutionToAscii(firstSol, rows, cols, grid)}</pre>`);
+          }
         } else if (result.timedOut) {
           _termLog(outputEl, `  <span class="c-err">⏱ timeout</span> <span class="c-dim">(${_fmtTime(ms)})</span>`);
           _termLog(outputEl, `  <span class="c-dim">${nodes.toLocaleString()} nodos explorados</span>`);

@@ -88,9 +88,12 @@ export function extractClues(grid) {
  * @param {number} maxSolutions - Detenerse al encontrar N soluciones
  * @param {number} timeoutMs - Timeout en milisegundos
  * @param {Function|null} onProgress - Callback(nodesExplored, timeMs) → truthy para cancelar
+ * @param {Function|null} onSolution - Callback(solutionMapped, totalCount) invocado cada vez que se
+ *                                     almacena una nueva solución (primeras MAX_STORED). Permite
+ *                                     reportar soluciones progresivamente mientras el solver sigue.
  * @returns {{solutions: Array, count: number, timedOut: boolean, stats: Object}}
  */
-export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, onProgress = null) {
+export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, onProgress = null, onSolution = null) {
   const t0 = performance.now();
   const rows = grid.length;
   const cols = grid[0].length;
@@ -285,6 +288,20 @@ export function solve(grid, clues, maxSolutions = Infinity, timeoutMs = 15000, o
       totalCount++;
       if (stored.length < MAX_STORED) {
         stored.push(partial.slice());
+        // Notificar progreso de soluciones (sólo para las almacenadas)
+        if (onSolution) {
+          const mapped = partial.map(ri => {
+            const { clueIdx, candIdx } = rowMap[ri];
+            return {
+              clue: { ...clues[clueIdx] },
+              rect: { ...allCands[clueIdx][candIdx] }
+            };
+          });
+          try { onSolution(mapped, totalCount); } catch (e) { /* ignorar */ }
+        }
+      } else if (onSolution && (totalCount & 1023) === 0) {
+        // Para soluciones posteriores sólo actualizamos contador periódicamente
+        try { onSolution(null, totalCount); } catch (e) { /* ignorar */ }
       }
       return;
     }

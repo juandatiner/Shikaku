@@ -4,7 +4,7 @@
  * Utiliza canvas doble (fondo + overlay) para rendimiento.
  */
 
-import { REGION_COLORS, REGION_TEXT_COLORS, CELL_SIZE_LIMITS } from './constants.js?v=29';
+import { REGION_COLORS, REGION_TEXT_COLORS, CELL_SIZE_LIMITS } from './constants.js?v=37';
 
 /**
  * Clase principal del tablero de juego
@@ -446,7 +446,10 @@ export class Board {
   }
 
   /**
-   * Intenta colocar una región basada en el arrastre actual
+   * Intenta colocar una región basada en el arrastre actual.
+   * Si el nuevo rectángulo se superpone con regiones existentes, esas
+   * regiones se eliminan completamente (en cadena) para permitir corregir
+   * movimientos equivocados simplemente dibujando encima.
    */
   _tryPlaceRegion() {
     if (!this.dragState) return;
@@ -460,37 +463,112 @@ export class Board {
     const h = r1 - r0 + 1;
     const area = w * h;
 
-    // Buscar pista contenida en este rectángulo
-    let clueIdx = -1;
-    let clueCount = 0;
+    // Buscar pistas dentro del nuevo rectángulo (asignadas o no)
+    const cluesInside = [];
     for (let i = 0; i < this.clues.length; i++) {
       const cl = this.clues[i];
       if (cl.row >= r0 && cl.row <= r1 && cl.col >= c0 && cl.col <= c1) {
-        // Verificar que la pista no está ya asignada a otra región
-        if (!this.playerRegions.has(i)) {
-          clueIdx = i;
-          clueCount++;
-        }
+        cluesInside.push(i);
       }
     }
 
-    // Validar: exactamente una pista, y su valor coincide con el área
-    if (clueCount !== 1 || this.clues[clueIdx].value !== area) {
+    // Detectar todas las regiones que se superponen con el nuevo rect
+    const overlappingClues = new Set();
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const owner = this.occupationMap[r][c];
+        if (owner !== -1) overlappingClues.add(owner);
+      }
+    }
+
+    // Exactamente una pista debe quedar dentro del nuevo rect.
+    // Puede ser una pista libre, o una pista cuya región ya estaba asignada
+    // (en ese caso la sobreescribimos).
+    if (cluesInside.length !== 1) {
+      this._shakeAnimation(r0, c0, w, h);
+      return;
+    }
+    const clueIdx = cluesInside[0];
+    if (this.clues[clueIdx].value !== area) {
       this._shakeAnimation(r0, c0, w, h);
       return;
     }
 
-    // Verificar que las celdas no están ocupadas por otra región
+    // Delegamos el trabajo de limpieza y colocación al helper compartido.
+    const cleared = this._applyRegion(clueIdx, { r0, c0, w, h });
+
+    this._animateRegionAppear(clueIdx, { r0, c0, w, h });
+    this.render();
+    this._checkVictory();
+
+    // Feedback visual: parpadea brevemente las pistas cuyas regiones fueron
+    // desplazadas, para que el jugador sepa que debe re-colocarlas.
+    if (cleared.length > 0) this._flashDisplacedClues(cleared);
+  }
+
+  /**
+   * Coloca una región para una pista, desplazando por completo cualquier
+   * región existente que se superponga geométricamente con el nuevo rect
+   * (o que tenga todavía celdas ocupadas dentro de él). Es la única ruta
+   * segura para mutar `playerRegions` y `occupationMap` cuando la nueva
+   * colocación puede entrar en conflicto con colocaciones previas.
+   *
+   * Usado por `_tryPlaceRegion` (arrastre del jugador) y por el
+   * manejador de pistas (`btn-hint` en ui.js) — ambos deben garantizar
+   * que no queden regiones huérfanas visibles como artefactos.
+   *
+   * @param {number} clueIdx - índice de la pista destino
+   * @param {{r0:number,c0:number,w:number,h:number}} rect - rectángulo final
+   * @returns {number[]} índices de las pistas cuyas regiones fueron limpiadas
+   *                    (excluyendo `clueIdx` si ya estaba colocada)
+   */
+  _applyRegion(clueIdx, rect) {
+    const { r0, c0, w, h } = rect;
+    const r1 = r0 + h - 1;
+    const c1 = c0 + w - 1;
+
+    // 1) Detectar por occupationMap (cualquier celda dentro del nuevo rect
+    //    que pertenezca a otra región).
+    const overlappingClues = new Set();
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
-        if (this.occupationMap[r][c] !== -1) {
-          this._shakeAnimation(r0, c0, w, h);
-          return;
-        }
+        const owner = this.occupationMap[r][c];
+        if (owner !== -1) overlappingClues.add(owner);
       }
     }
 
-    // ¡Válido! Asignar región
+    // 2) Detectar por geometría (entradas de playerRegions cuyo rect
+    //    intersecta con el nuevo rect, aunque no tengan celdas en
+    //    occupationMap por cualquier inconsistencia previa).
+    for (const [idx, pr] of this.playerRegions) {
+      const geomOverlap =
+        pr.r0 <= r1 && pr.r0 + pr.h - 1 >= r0 &&
+        pr.c0 <= c1 && pr.c0 + pr.w - 1 >= c0;
+      if (geomOverlap) overlappingClues.add(idx);
+    }
+
+    // 3) Incluir también la pista destino si ya tenía una región previa
+    //    (re-colocación en el mismo sitio o en otro).
+    if (this.playerRegions.has(clueIdx)) overlappingClues.add(clueIdx);
+
+    // 4) Limpiar por completo todas las regiones detectadas.
+    const cleared = [];
+    for (const owner of overlappingClues) {
+      const pr = this.playerRegions.get(owner);
+      if (pr) {
+        for (let r = pr.r0; r < pr.r0 + pr.h; r++) {
+          for (let c = pr.c0; c < pr.c0 + pr.w; c++) {
+            this.occupationMap[r][c] = -1;
+          }
+        }
+        this.playerRegions.delete(owner);
+      }
+      if (owner !== clueIdx) cleared.push(owner);
+    }
+
+    // 5) Asignar la nueva región. El orden de inserción importa: como
+    //    acabamos de borrar cualquier cosa que se cruce, esta entrada
+    //    queda al final y no hay solapes pendientes.
     this.playerRegions.set(clueIdx, { r0, c0, w, h });
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
@@ -498,9 +576,51 @@ export class Board {
       }
     }
 
-    this._animateRegionAppear(clueIdx, { r0, c0, w, h });
+    return cleared;
+  }
+
+  /**
+   * API pública: coloca una región forzando el desplazamiento de cualquier
+   * otra que se cruce. Usado por el manejador de pistas en ui.js para
+   * evitar artefactos visuales cuando una pista se superpone a una
+   * colocación incorrecta del jugador.
+   */
+  placeRegionForced(clueIdx, rect) {
+    const cleared = this._applyRegion(clueIdx, rect);
     this.render();
-    this._checkVictory();
+    if (cleared.length > 0) this._flashDisplacedClues(cleared);
+    return cleared;
+  }
+
+  /**
+   * Resalta momentáneamente las pistas cuyas regiones fueron desplazadas
+   * al colocar encima un rectángulo nuevo. Sirve como recordatorio visual.
+   */
+  _flashDisplacedClues(clueIndices) {
+    const cs = this.cellSize;
+    const octx = this.octx;
+    if (!octx) return;
+    let frame = 0;
+    const maxFrames = 30;
+    const step = () => {
+      this._clearOverlay();
+      const alpha = 0.55 * Math.abs(Math.sin(frame * 0.35)) * (1 - frame / maxFrames);
+      octx.save();
+      octx.fillStyle = `rgba(255, 152, 0, ${alpha})`;
+      octx.strokeStyle = `rgba(230, 81, 0, ${Math.min(1, alpha * 2)})`;
+      octx.lineWidth = 2;
+      for (const idx of clueIndices) {
+        const cl = this.clues[idx];
+        if (!cl) continue;
+        octx.fillRect(cl.col * cs, cl.row * cs, cs, cs);
+        octx.strokeRect(cl.col * cs + 1, cl.row * cs + 1, cs - 2, cs - 2);
+      }
+      octx.restore();
+      frame++;
+      if (frame < maxFrames) requestAnimationFrame(step);
+      else this._clearOverlay();
+    };
+    step();
   }
 
   /**

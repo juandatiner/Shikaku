@@ -4,7 +4,7 @@
  * Recibe mensajes SOLVE y CANCEL, envía PROGRESS y DONE.
  */
 
-import { solve, extractClues } from './solver.js?v=29';
+import { solve, extractClues, countSolutionsBT } from './solver.js?v=37';
 
 let cancelled = false;
 
@@ -13,6 +13,21 @@ self.onmessage = function(e) {
 
   if (msg.type === 'CANCEL') {
     cancelled = true;
+    return;
+  }
+
+  if (msg.type === 'VERIFY_BT') {
+    // Conteo cruzado con backtracking (verificación independiente).
+    // Se ejecuta en un worker separado para NO bloquear el main thread
+    // ni el autoplay del paso a paso.
+    try {
+      const { grid, clues, maxCount, timeoutMs } = msg;
+      const clueList = clues || extractClues(grid);
+      const result = countSolutionsBT(grid, clueList, maxCount ?? Infinity, timeoutMs ?? 15000);
+      self.postMessage({ type: 'BT_DONE', result });
+    } catch (err) {
+      self.postMessage({ type: 'ERROR', error: err.message });
+    }
     return;
   }
 
@@ -31,8 +46,17 @@ self.onmessage = function(e) {
       return false;
     };
 
+    const onSolution = (solution, count) => {
+      if (cancelled) return;
+      self.postMessage({
+        type: 'SOLUTION_FOUND',
+        solution,
+        count
+      });
+    };
+
     try {
-      const result = solve(grid, clueList, maxSolutions ?? Infinity, timeoutMs ?? 15000, onProgress);
+      const result = solve(grid, clueList, maxSolutions ?? Infinity, timeoutMs ?? 15000, onProgress, onSolution);
       if (cancelled) {
         self.postMessage({ type: 'CANCELLED' });
       } else {
