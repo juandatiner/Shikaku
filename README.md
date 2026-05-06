@@ -288,7 +288,104 @@ Esa es toda la idea.
 
 ---
 
-## 7. Mapa de archivos
+## 7. El explicador (paso a paso visual)
+
+Cuando el solver termina, aparece un botón que abre el modal **"¿Cómo encontró esta solución?"**. Ahí mostramos, en lenguaje simple y con mini-tableros, cada decisión que tomó el algoritmo para llegar al resultado.
+
+### 7.1 La idea general
+
+El solver no solo resuelve el puzzle: mientras lo hace, va **avisando** cada cosa que hace. La interfaz escucha esos avisos y los pinta como tarjetas, una abajo de otra, igual que un diario de la búsqueda.
+
+```
+       ┌──────────────┐  emite eventos   ┌──────────────┐
+       │   SOLVER     │  ─────────────▶  │  EXPLICADOR  │
+       │  resolviendo │                  │   pinta UI   │
+       └──────────────┘                  └──────────────┘
+                                               │
+                                               ▼
+                                ¿La explicación llega
+                                  a la misma solución
+                                   que ves jugando?
+                                      ┌────┴────┐
+                                      │         │
+                                      SÍ        NO
+                                      │         │
+                                  mostrar   reconstruir
+                                  tal cual   desde la
+                                            solución real
+```
+
+Esta doble revisión (mostrar y verificar) es lo que evita que en mapas grandes la explicación se "trabe" o muestre un estado distinto al del tablero.
+
+### 7.2 Qué cosas avisa el solver
+
+Cada vez que el solver hace algo importante, dispara un **evento**. Cada evento se traduce a una tarjeta en pantalla:
+
+| Evento | Lo que pasó en el solver | Cómo se ve en pantalla |
+|--------|--------------------------|------------------------|
+| `generar` | Empezó. Calculó cuántas formas tiene cada pista. | 🟪 Tarjeta inicial con el conteo total |
+| `cascada` | Una pista quedó con una sola opción posible. | 🟢 "Es la única que cabe" + rectángulo dibujado |
+| `celda` | Una casilla solo la puede tapar una pista, así que recortamos las opciones de esa pista. | 🟦 Casilla resaltada azul + opciones tachadas en rojo y sobrevivientes en verde |
+| `dp_pick` | DP eligió un candidato para una pista. | 🟣 "Pruebo esta forma" + rectángulo en la mini-grilla |
+| `backtrack` | Ningún candidato funcionó, hay que retroceder. | 🟥 Rectángulo borrado, dibujado en rojo punteado |
+| `forward_skip` | DP descartó un candidato anticipadamente porque dejaba a otra pista sin opciones. | ⚠️ Tarjeta breve (mostramos solo los primeros 30 para no saturar) |
+| `solucion` | Tablero completo. | ✅ Mini-grilla final con todos los rectángulos |
+| `contradiccion` | Puzzle imposible. | ❌ Tarjeta de cierre |
+| `sin_dp` | Las fases de propagación resolvieron todo, no hizo falta probar nada. | ⚡ Tarjeta de cierre rápido |
+
+### 7.3 Cómo se dibujan las mini-grillas
+
+Cada tarjeta lleva al lado un mini-tablero que muestra **el estado del puzzle en ese momento**: qué rectángulos ya están puestos, cuál se acaba de agregar, cuál se borró si fue un retroceso.
+
+Para esto, el explicador mantiene una pila interna de rectángulos. Cada `cascada` o `dp_pick` agrega uno; cada `backtrack` quita uno.
+
+**El bug que arreglamos**: cuando DP retrocede y prueba otra forma para la misma pista, el evento `dp_pick` aparece dos veces con la misma pista pero rectángulo distinto. Si simplemente apilábamos, una pista terminaba dibujada con dos rectángulos a la vez (el viejo y el nuevo, ambos del mismo color). Solución:
+
+> Si la pista ya está en la pila, **reemplazamos** su rectángulo. Si no, lo agregamos.
+
+Así la mini-grilla siempre refleja exactamente lo que el solver tiene en ese instante.
+
+### 7.4 La doble revisión (verificador + sintetizador)
+
+En mapas grandes el solver puede explorar miles de caminos. Si emitiéramos cada paso, la explicación quedaría incomprensible (o se cortaría a mitad y dejaría al usuario viendo un tablero a medio armar). Para evitarlo:
+
+**Primero — el verificador.** Cuando termina el trace, simulamos la misma lógica que usa la UI para armar la mini-grilla y revisamos que el estado final coincida exactamente con la solución que el jugador ve en el tablero. Si **no llega**, algo se cortó o se enredó.
+
+**Después — el sintetizador (plan B).** Si el verificador detecta que el trace está incompleto:
+
+1. **Conservamos lo confiable**: los pasos de preprocesamiento (cascada y casillas obligadas) son rápidos y siempre cierran bien, así que se mantienen tal cual.
+2. **Reemplazamos la parte enredada**: en lugar de mostrar las miles de pruebas y retrocesos de DP, dibujamos directamente cada pista pendiente con el rectángulo que sabemos correcto (el de la solución real).
+3. **Avisamos al usuario** con un banner ámbar arriba del paso a paso explicando que se reconstruyó la parte final.
+
+> **Garantía**: la mini-grilla del explicador siempre llega al mismo estado que el tablero jugable. Nunca se queda en bucle ni muestra algo inconsistente.
+
+### 7.5 Por qué hay límites (caps)
+
+Para que la pantalla no se ahogue ni se trabe, hay tres techos:
+
+| Tope | Valor | Por qué existe |
+|------|-------|----------------|
+| Total de eventos | 8000 | Más que esto satura el navegador. Suficiente para mapas medianos. |
+| Pruebas + retrocesos de DP | 800 | Si DP pasa de aquí, claramente está explorando demasiado: activamos el sintetizador en vez de mostrar caos. |
+| Descartes anticipados (`forward_skip`) | 30 | Son repetitivos. Mostrar más no aporta. |
+| Eventos de cierre | ∞ | `solucion`, `contradiccion` y `sin_dp` **siempre** entran, aunque el cap esté lleno, para que el usuario nunca vea un trace sin final. |
+
+### 7.6 El resto del modal
+
+Además del paso a paso, el modal tiene 6 secciones más, todas **colapsables** (chevron ▾ que rota al cerrar):
+
+- **🧠 Las 4 ideas clave** — un resumen visual de los pilares del algoritmo: DP, reglas de descarte, MRV, cascada con forward-check.
+- **📊 Resumen del puzzle** — tamaño, número de pistas, soluciones encontradas, tiempo total, nodos explorados, ramificación, y una estimación de dificultad calculada con `log₂` de las opciones.
+- **🗺️ Mapa visual** — el tablero pintado con un color por rectángulo y la pista resaltada con borde grueso.
+- **⚙️ Cómo funciona el algoritmo** — las 7 fases generales explicadas con los números reales de este puzzle (cuántos candidatos había, cuántos quedaron, cuánto tardó).
+- **📍 Cómo encontré esta solución** — el paso a paso (lo que describimos arriba).
+- **📋 Análisis por pista** — tabla con MRV: cada pista, sus factorizaciones, cuántos candidatos tenía, qué rectángulo terminó eligiendo y su área.
+
+Cada sección tiene un color de acento distinto en el borde superior para que se distingan a primera vista.
+
+---
+
+## 8. Mapa de archivos
 
 ```
 shikaku/js/

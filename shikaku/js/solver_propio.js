@@ -326,34 +326,39 @@ function aplicarReglas(candidatos, pista, todasLasPistas, totalFilas, totalCols)
  * @param {Map}    asignadas       - pistaIdx → candidato elegido
  * @returns {boolean} false si se detectó una contradicción (alguna pista quedó sin candidatos)
  */
-function propagarCascada(tablaCandidatos, pistas, ocupadas, asignadas) {
+function propagarCascada(tablaCandidatos, pistas, ocupadas, asignadas, trace = null) {
   let huboCambios = true;
 
   while (huboCambios) {
     huboCambios = false;
 
     for (let i = 0; i < pistas.length; i++) {
-      if (asignadas.has(i)) continue; // Ya decidida
+      if (asignadas.has(i)) continue;
 
-      // Eliminar candidatos que se solapan con celdas ya ocupadas
       tablaCandidatos[i] = tablaCandidatos[i].filter(
         ({ r0, c0, ancho, alto }) => !seSolapa(r0, c0, ancho, alto, ocupadas)
       );
 
-      // Si no quedan candidatos → contradicción, no hay solución por aquí
-      if (tablaCandidatos[i].length === 0) return false;
+      if (tablaCandidatos[i].length === 0) {
+        if (trace) trace({ phase: 'contradiccion', etapa: 'cascada', pistaIdx: i });
+        return false;
+      }
 
-      // Si quedó exactamente uno → asignación forzada
       if (tablaCandidatos[i].length === 1) {
-        const { r0, c0, ancho, alto } = tablaCandidatos[i][0];
-        asignadas.set(i, tablaCandidatos[i][0]);
-        ocuparCeldas(r0, c0, ancho, alto, ocupadas);
-        huboCambios = true; // Puede haber más forzadas ahora
+        const cand = tablaCandidatos[i][0];
+        asignadas.set(i, cand);
+        ocuparCeldas(cand.r0, cand.c0, cand.ancho, cand.alto, ocupadas);
+        huboCambios = true;
+        if (trace) trace({
+          phase: 'cascada', pistaIdx: i,
+          row: pistas[i].fila, col: pistas[i].col, valor: pistas[i].valor,
+          rect: { r0: cand.r0, c0: cand.c0, w: cand.ancho, h: cand.alto }
+        });
       }
     }
   }
 
-  return true; // Sin contradicciones
+  return true;
 }
 
 
@@ -379,7 +384,7 @@ function propagarCascada(tablaCandidatos, pistas, ocupadas, asignadas) {
  *
  * @returns {boolean} false si se detecta contradicción
  */
-function propagarCeldasObligadas(tablaCandidatos, pistas, ocupadas, asignadas) {
+function propagarCeldasObligadas(tablaCandidatos, pistas, ocupadas, asignadas, trace = null) {
   let huboCambios = true;
 
   while (huboCambios) {
@@ -415,13 +420,17 @@ function propagarCeldasObligadas(tablaCandidatos, pistas, ocupadas, asignadas) {
     // Recolectar las restricciones antes de aplicar (para evitar mutaciones
     // intercaladas que invaliden la información ya recogida)
     //   restricciones: pistaIdx → Set<candObj> permitidos
+    //   ejemploCelda:  pistaIdx → "r,c" (una celda que dispara la restricción, para trace)
     const restricciones = new Map();
+    const ejemploCelda = new Map();
 
-    for (const [, porPista] of cobertura) {
+    for (const [cellKey, porPista] of cobertura) {
       if (porPista.size !== 1) continue;
 
       const [pistaIdx, setCands] = porPista.entries().next().value;
       if (asignadas.has(pistaIdx)) continue;
+
+      if (!ejemploCelda.has(pistaIdx)) ejemploCelda.set(pistaIdx, cellKey);
 
       // Intersectar con restricciones previas de la misma pista (si las hay)
       const previo = restricciones.get(pistaIdx);
@@ -439,8 +448,33 @@ function propagarCeldasObligadas(tablaCandidatos, pistas, ocupadas, asignadas) {
       const actuales = tablaCandidatos[pistaIdx];
       if (permitidos.size === actuales.length) continue; // sin cambio
       const filtrados = actuales.filter(c => permitidos.has(c));
-      if (filtrados.length === 0) return false;
+      if (filtrados.length === 0) {
+        if (trace) trace({ phase: 'contradiccion', etapa: 'celdas', pistaIdx });
+        return false;
+      }
       if (filtrados.length !== actuales.length) {
+        if (trace) {
+          const cellKey = ejemploCelda.get(pistaIdx);
+          let celdaR = -1, celdaC = -1;
+          if (cellKey) {
+            const [cr, cc] = cellKey.split(',').map(Number);
+            celdaR = cr; celdaC = cc;
+          }
+          // Listar candidatos eliminados (para mostrar al usuario)
+          const eliminados = actuales.filter(c => !permitidos.has(c)).map(c => ({
+            r0: c.r0, c0: c.c0, w: c.ancho, h: c.alto
+          }));
+          const sobrevivientes = filtrados.map(c => ({
+            r0: c.r0, c0: c.c0, w: c.ancho, h: c.alto
+          }));
+          trace({
+            phase: 'celda', pistaIdx,
+            row: pistas[pistaIdx].fila, col: pistas[pistaIdx].col, valor: pistas[pistaIdx].valor,
+            celdaR, celdaC,
+            candidatosAntes: actuales.length, candidatosDespues: filtrados.length,
+            eliminados, sobrevivientes
+          });
+        }
         tablaCandidatos[pistaIdx] = filtrados;
         huboCambios = true;
       }
@@ -448,7 +482,7 @@ function propagarCeldasObligadas(tablaCandidatos, pistas, ocupadas, asignadas) {
 
     // Si recortamos algo, dejar que la cascada saque las nuevas forzadas
     if (huboCambios) {
-      const ok = propagarCascada(tablaCandidatos, pistas, ocupadas, asignadas);
+      const ok = propagarCascada(tablaCandidatos, pistas, ocupadas, asignadas, trace);
       if (!ok) return false;
     }
   }
@@ -536,7 +570,8 @@ function buscarConTablaDP(
   maxSoluciones,
   tiempoLimite,
   onProgress,
-  onSolucion
+  onSolucion,
+  trace = null
 ) {
   const inicio         = performance.now();
   const soluciones     = [];
@@ -550,6 +585,16 @@ function buscarConTablaDP(
     (a, b) => tablaCandidatos[a].length - tablaCandidatos[b].length
   );
   const totalPasos = ordenBusqueda.length;
+
+  if (trace) trace({
+    phase: 'dp_orden',
+    orden: ordenBusqueda.map((idx, paso) => ({
+      paso,
+      pistaIdx: idx,
+      row: pistas[idx].fila, col: pistas[idx].col, valor: pistas[idx].valor,
+      candidatos: tablaCandidatos[idx].length
+    }))
+  });
 
   // ─── LA TABLA DE DECISIONES ────────────────────────────────────────
   // tablaDecisiones[paso] = índice del candidato elegido para ese paso.
@@ -585,7 +630,6 @@ function buscarConTablaDP(
     if (paso === totalPasos) {
       totalEncontradas++;
 
-      // Reconstruir la solución completa leyendo la tabla de decisiones
       const todasLasAsignaciones = new Map(asignadasBase);
       for (let p = 0; p < totalPasos; p++) {
         const idx  = ordenBusqueda[p];
@@ -597,11 +641,11 @@ function buscarConTablaDP(
       if (soluciones.length < 10) {
         soluciones.push(sol);
         if (onSolucion) try { onSolucion(sol, totalEncontradas); } catch {}
+        if (trace) trace({ phase: 'solucion', numero: totalEncontradas });
       }
 
       if (totalEncontradas >= maxSoluciones) break;
 
-      // Retroceder para seguir buscando más soluciones
       paso--;
       const idxRet  = ordenBusqueda[paso];
       const candRet = tablaCandidatos[idxRet][tablaDecisiones[paso]];
@@ -609,47 +653,56 @@ function buscarConTablaDP(
       continue;
     }
 
-    // ─── BUSCAR EL SIGUIENTE CANDIDATO VÁLIDO EN ESTE PASO ─────────
-    //
-    // tablaDecisiones[paso] guarda el índice del último candidato que
-    // intentamos aquí. Empezamos desde el SIGUIENTE (+1).
-    // Si es la primera vez en este paso, vale -1, así que empezamos
-    // en 0 (-1 + 1 = 0). Esto unifica el avance y el backtrack.
     const idxPista   = ordenBusqueda[paso];
     const candidatos = tablaCandidatos[idxPista];
     let encontrado   = false;
+    let candidatosIntentados = 0;
+    let candidatosDescartadosFwd = 0;
 
     for (let ci = tablaDecisiones[paso] + 1; ci < candidatos.length; ci++) {
       const { r0, c0, ancho, alto } = candidatos[ci];
+      candidatosIntentados++;
 
       if (!seSolapa(r0, c0, ancho, alto, ocupadasBusqueda)) {
-        // Ocupar provisionalmente y verificar que los pasos siguientes
-        // siguen teniendo al menos un candidato libre cada uno.
         ocuparCeldas(r0, c0, ancho, alto, ocupadasBusqueda);
 
         if (verificarTodasTienenSalida(ordenBusqueda, paso + 1, tablaCandidatos, ocupadasBusqueda)) {
-          // ¡Válido! Anotar la decisión en la tabla y avanzar.
           tablaDecisiones[paso] = ci;
           encontrado = true;
+          if (trace) trace({
+            phase: 'dp_pick', paso, pistaIdx: idxPista,
+            row: pistas[idxPista].fila, col: pistas[idxPista].col, valor: pistas[idxPista].valor,
+            candIdx: ci, totalCandidatos: candidatos.length,
+            descartadosForward: candidatosDescartadosFwd,
+            rect: { r0, c0, w: ancho, h: alto }
+          });
           break;
         }
 
-        // No pasó la verificación → liberar y probar el siguiente candidato
+        candidatosDescartadosFwd++;
+        if (trace) trace({
+          phase: 'forward_skip', paso, pistaIdx: idxPista,
+          row: pistas[idxPista].fila, col: pistas[idxPista].col, valor: pistas[idxPista].valor,
+          rect: { r0, c0, w: ancho, h: alto }
+        });
         liberarCeldas(r0, c0, ancho, alto, ocupadasBusqueda);
       }
     }
 
     if (encontrado) {
-      paso++; // Avanzar a la siguiente fila de la tabla
+      paso++;
     } else {
-      // Ningún candidato funcionó aquí → retroceder (backtrack)
-      tablaDecisiones[paso] = -1; // Limpiar para la próxima visita
+      tablaDecisiones[paso] = -1;
+      if (trace) trace({
+        phase: 'backtrack', paso,
+        pistaIdx: idxPista,
+        row: pistas[idxPista].fila, col: pistas[idxPista].col, valor: pistas[idxPista].valor,
+        razon: 'sin candidatos viables',
+        candidatosProbados: candidatosIntentados
+      });
       paso--;
 
       if (paso >= 0) {
-        // Liberar las celdas del candidato que elegimos en el paso anterior.
-        // En la siguiente vuelta del bucle, tablaDecisiones[paso] + 1
-        // apuntará al candidato siguiente de ese paso (se prueba el resto).
         const idxAnt  = ordenBusqueda[paso];
         const candAnt = tablaCandidatos[idxAnt][tablaDecisiones[paso]];
         liberarCeldas(candAnt.r0, candAnt.c0, candAnt.ancho, candAnt.alto, ocupadasBusqueda);
@@ -720,11 +773,14 @@ export function solvePropio(
   maxSoluciones = Infinity,
   tiempoLimite  = 15000,
   onProgress    = null,
-  onSolucion    = null
+  onSolucion    = null,
+  onTrace       = null
 ) {
   const t0   = performance.now();
   const filas = grid.length;
   const cols  = grid[0].length;
+
+  const trace = onTrace ? (ev) => { try { onTrace(ev); } catch {} } : null;
 
   // Convertir al formato interno
   const pistas = convertirPistas(pistasApp);
@@ -740,37 +796,38 @@ export function solvePropio(
   }
 
   // ─── FASE 1: Generar candidatos ─────────────────────────────
-  // Para cada pista, calculamos todos los rectángulos que podrían funcionar.
   const tablaCandidatos = pistas.map(p => generarCandidatos(p, filas, cols));
+  if (trace) trace({ phase: 'generar', pistas: pistas.map((p, i) => ({
+    pistaIdx: i, row: p.fila, col: p.col, valor: p.valor,
+    candidatos: tablaCandidatos[i].length
+  })) });
 
   // ─── FASE 2: Aplicar reglas ──────────────────────────────────
-  // Reducimos los candidatos usando las reglas que analizamos.
   for (let i = 0; i < pistas.length; i++) {
+    const antes = tablaCandidatos[i].length;
     tablaCandidatos[i] = aplicarReglas(
-      tablaCandidatos[i],
-      pistas[i],
-      pistas,
-      filas,
-      cols
+      tablaCandidatos[i], pistas[i], pistas, filas, cols
     );
-
-    // Si alguna pista queda sin candidatos, el puzzle no tiene solución
+    const despues = tablaCandidatos[i].length;
+    if (trace && despues !== antes) {
+      trace({
+        phase: 'reglas', pistaIdx: i,
+        row: pistas[i].fila, col: pistas[i].col, valor: pistas[i].valor,
+        candidatosAntes: antes, candidatosDespues: despues
+      });
+    }
     if (tablaCandidatos[i].length === 0) {
       return _resultado([], 0, false, t0);
     }
   }
 
   // ─── FASE 3: Propagación en cascada ─────────────────────────
-  // Asignamos las pistas "forzadas" (solo 1 candidato).
-  // Cada asignación puede forzar a otras → efecto dominó.
   const ocupadas   = new Set();
   const asignadas  = new Map();
-
-  // Hacer una copia de la tabla para no mutar la original en cascada
   const tablaParaCascada = tablaCandidatos.map(c => [...c]);
 
   const sinContradiccion = propagarCascada(
-    tablaParaCascada, pistas, ocupadas, asignadas
+    tablaParaCascada, pistas, ocupadas, asignadas, trace
   );
 
   if (!sinContradiccion) {
@@ -778,11 +835,8 @@ export function solvePropio(
   }
 
   // ─── FASE 3.5: Propagación por celdas obligadas ─────────────
-  // Cada celda libre debe ser cubierta. Si solo una pista puede taparla,
-  // esa pista queda restringida a los candidatos que la cubren.
-  // Esto despierta más cascadas y poda mucho antes de la búsqueda DP.
   const sinContradiccionCeldas = propagarCeldasObligadas(
-    tablaParaCascada, pistas, ocupadas, asignadas
+    tablaParaCascada, pistas, ocupadas, asignadas, trace
   );
 
   if (!sinContradiccionCeldas) {
@@ -802,6 +856,7 @@ export function solvePropio(
 
   if (indicesSinAsignar.length === 0) {
     // ¡La cascada resolvió TODO el puzzle sola! Caso ideal.
+    if (trace) trace({ phase: 'sin_dp' });
     const sol = construirSolucion(asignadas, pistas, tablaParaCascada);
     soluciones = [sol];
     totalEncontradas = 1;
@@ -820,7 +875,8 @@ export function solvePropio(
       maxSoluciones,
       tiempoLimite - (performance.now() - t0),
       onProgress,
-      onSolucion
+      onSolucion,
+      trace
     );
 
     soluciones       = resultado.soluciones;

@@ -5,7 +5,7 @@
  * Recibe mensajes SOLVE y CANCEL, envía PROGRESS y DONE.
  */
 
-import { solvePropio, extractClues } from './solver_propio.js?v=5';
+import { solvePropio, extractClues } from './solver_propio.js?v=6';
 import { countSolutionsDLX } from './solver_dlx.js?v=1';
 
 let cancelled = false;

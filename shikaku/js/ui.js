@@ -6,7 +6,7 @@
 import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=37';
 import { Board } from './board.js?v=37';
 import { getSizeForLevel, generatePuzzle } from './generator.js?v=37';
-import { solvePropio as solve, extractClues, getCandidates, getFactorizations, validateSolution } from './solver_propio.js?v=5';
+import { solvePropio as solve, extractClues, getCandidates, getFactorizations, validateSolution } from './solver_propio.js?v=6';
 
 /** Estado global de la aplicación */
 const state = {
@@ -1366,6 +1366,50 @@ function _showSolveInfoModal(result, grid) {
   const sol = hasSolution ? result.solutions[0] : null;
   const timeoutNote = result.timedOut ? ' <span class="algo-badge algo-warn">timeout</span>' : '';
 
+  // ── Capturar trace real del solver para mostrar paso a paso ──
+  // Re-corremos el solver pidiendo solo 1 solución para registrar las
+  // decisiones que tomó: cascada, celdas obligadas, MRV, forward-check
+  // y backtracks. Esto es lo que el usuario ve como "Paso a paso".
+  let traceEvents = [];
+  let traceSynthesized = false;
+  try {
+    const TERMINAL = new Set(['solucion', 'contradiccion', 'sin_dp']);
+    let forwardSkipCount = 0;
+    const FORWARD_SKIP_MAX = 30;
+    const EVENT_CAP = 8000;
+    // Cap específico para dp_pick + backtrack: si DP entra en patrones largos
+    // de exploración, el trace se vuelve incomprensible (el usuario percibe
+    // "se quedó atascado poniendo y quitando lo mismo"). Cortamos temprano
+    // y caemos al sintetizado desde la solución real.
+    const DP_BACK_MAX = 800;
+    let dpBackCount = 0;
+    let dpOverflow = false;
+    solve(grid, clues, 1, 5000, null, null, (ev) => {
+      if (ev.phase === 'forward_skip') {
+        forwardSkipCount++;
+        if (forwardSkipCount > FORWARD_SKIP_MAX) return;
+      }
+      if (ev.phase === 'dp_pick' || ev.phase === 'backtrack') {
+        dpBackCount++;
+        if (dpBackCount > DP_BACK_MAX) { dpOverflow = true; return; }
+      }
+      if (TERMINAL.has(ev.phase)) {
+        traceEvents.push(ev);
+        return;
+      }
+      if (traceEvents.length < EVENT_CAP) traceEvents.push(ev);
+    });
+    if (dpOverflow) traceEvents._dpOverflow = true;
+  } catch { /* trace falló, no impide mostrar el modal */ }
+
+  // ── Verificar que el trace coherentemente llega a la solución real ──
+  // Si no llega (por timeout, overflow de DP o cualquier inconsistencia)
+  // sintetizamos un trace limpio a partir de la solución conocida (`sol`).
+  if (sol && !_verifyTraceMatchesSolution(traceEvents, sol, clues)) {
+    traceEvents = _synthesizeTraceFromSolution(traceEvents, sol, clues, rows, cols);
+    traceSynthesized = true;
+  }
+
   // ── Build per-clue analysis ──
   const clueAnalysis = clues.map(clue => {
     const allCands = getCandidates(clue, rows, cols);
@@ -1426,17 +1470,23 @@ function _showSolveInfoModal(result, grid) {
       mapRows += `<tr>${mapCells}</tr>`;
     }
     solutionMapHTML = `
-      <p class="algo-section-title">Mapa visual de la solucion</p>
-      <div class="smap-container">
-        <table class="smap-table"><tbody>${mapRows}</tbody></table>
-      </div>
-      <div class="smap-legend">
-        ${sol.map((step, i) => {
-          const c = step.clue;
-          const r = step.rect;
-          return `<span class="smap-legend-item"><span class="smap-legend-color" style="background:${_RECT_PALETTE[i % _RECT_PALETTE.length]}"></span>(${c.row+1},${c.col+1})=${c.value} → ${r.w}×${r.h}</span>`;
-        }).join('')}
-      </div>
+      <section class="algo-section algo-section-map">
+        <div class="algo-section-head">
+          <span class="algo-section-icon">🗺️</span>
+          <h3 class="algo-section-title-new">Mapa visual de la solución</h3>
+        </div>
+        <p class="algo-section-sub">Cada color es un rectángulo. La celda con borde grueso es la pista.</p>
+        <div class="smap-container">
+          <table class="smap-table"><tbody>${mapRows}</tbody></table>
+        </div>
+        <div class="smap-legend">
+          ${sol.map((step, i) => {
+            const c = step.clue;
+            const r = step.rect;
+            return `<span class="smap-legend-item"><span class="smap-legend-color" style="background:${_RECT_PALETTE[i % _RECT_PALETTE.length]}"></span>(${c.row+1},${c.col+1})=${c.value} → ${r.w}×${r.h}</span>`;
+          }).join('')}
+        </div>
+      </section>
     `;
   }
 
@@ -1497,10 +1547,17 @@ function _showSolveInfoModal(result, grid) {
       </div>`;
   }).join('');
 
+  // ── Paso a paso REAL (de los eventos del solver en este puzzle) ──
+  const stepByStepHTML = _buildTraceHTML(traceEvents, rows, cols, clues, traceSynthesized);
+
   // ── Como funciona el algoritmo (DP por fases) ──
   const algoExplainHTML = `
-    <div class="solve-explain-section">
-      <p class="algo-section-title">Como funciona paso a paso</p>
+    <section class="algo-section algo-section-flow">
+      <div class="algo-section-head">
+        <span class="algo-section-icon">⚙️</span>
+        <h3 class="algo-section-title-new">Cómo funciona el algoritmo</h3>
+      </div>
+      <p class="algo-section-sub">Las 7 fases que el solver ejecuta sobre cualquier tablero.</p>
       <div class="solve-steps-flow">
         <div class="solve-flow-step">
           <div class="solve-flow-num">1</div>
@@ -1526,8 +1583,8 @@ function _showSolveInfoModal(result, grid) {
         <div class="solve-flow-step">
           <div class="solve-flow-num">4</div>
           <div class="solve-flow-body">
-            <strong>Celdas obligadas</strong>
-            <span>Cada celda libre debe ser cubierta por algun rectangulo. Si solo los candidatos de UNA pista pueden taparla, esa pista queda restringida a esos candidatos — y al recortar puede disparar nuevamente la cascada.</span>
+            <strong>Casilla obligada (recorte por celda)</strong>
+            <span>Toda casilla del tablero debe quedar cubierta por exactamente un rectángulo. Si miro una casilla vacía y veo que <em>solo una pista</em> tiene formas que la incluyen, entonces esa pista <em>tiene que</em> elegir una de esas formas — el resto de sus opciones (las que no tapan esa casilla) se descartan. Recorta sin adivinar y suele disparar nueva cascada.</span>
           </div>
         </div>
         <div class="solve-flow-step">
@@ -1554,7 +1611,7 @@ function _showSolveInfoModal(result, grid) {
           </div>
         </div>
       </div>
-    </div>
+    </section>
   `;
 
   // ── Time formatting ──
@@ -1589,84 +1646,101 @@ function _showSolveInfoModal(result, grid) {
       <button class="algo-close" id="solve-info-close">✕</button>
     </div>
 
-    <div class="algo-explain-cards">
-      <div class="algo-explain-card algo-card-blue">
-        <div class="algo-card-icon">🧮</div>
-        <div class="algo-card-body">
-          <strong>Programacion Dinamica</strong>
-          <span>Tabla de decisiones por pasos: cada paso elige un candidato y la tabla guarda el estado para retroceder cuando el camino no lleva a solucion</span>
-        </div>
-      </div>
-      <div class="algo-explain-card algo-card-purple">
-        <div class="algo-card-icon">📐</div>
-        <div class="algo-card-body">
-          <strong>Reglas de descarte</strong>
-          <span>Esquinas, primos, otras pistas dentro y orden por cuadrados — recortan el espacio antes de empezar a buscar</span>
-        </div>
-      </div>
-      <div class="algo-explain-card algo-card-green">
-        <div class="algo-card-icon">🎯</div>
-        <div class="algo-card-body">
-          <strong>Heuristica MRV</strong>
-          <span>Minimum Remaining Values — procesa primero la pista con menos candidatos para detectar contradicciones temprano</span>
-        </div>
-      </div>
-      <div class="algo-explain-card" style="background:#fef2f2;color:#991b1b;">
-        <div class="algo-card-icon">✂️</div>
-        <div class="algo-card-body">
-          <strong>Cascada y forward-check</strong>
-          <span>Si una pista queda con un solo candidato se asigna en cadena. Antes de avanzar se verifica que las pendientes sigan teniendo opciones</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="algo-stats-row">
-      <span class="algo-stat-pill">📏 ${cols}×${rows} (${totalCells} celdas)</span>
-      <span class="algo-stat-pill">🔢 ${clues.length} pistas</span>
-      <span class="algo-stat-pill" style="${result.count === 0 ? 'background:#fdd;color:#c00;' : result.count === 1 && !result.timedOut ? 'background:#dfd;color:#065f46;' : ''}">${result.count === 0 ? '✗' : '✓'} ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} solucion${result.count !== 1 ? 'es' : ''}${timeoutNote}</span>
-      <span class="algo-stat-pill">⏱ ${timeStr}</span>
-      <span class="algo-stat-pill">🔍 ${nodesStr} nodos</span>
-      <span class="algo-stat-pill">🌿 ramificacion: ${minCandidates}–${maxCandidates} (x̄ ${avgCandidates})</span>
-      ${crossValidHTML}
-    </div>
-
-    <div class="solve-difficulty-bar">
-      <span class="solve-diff-icon">${diffIcon}</span>
-      <span class="solve-diff-label" style="color:${diffColor}"><strong>${diffLevel}</strong></span>
-      <span class="solve-diff-desc">${diffDesc}</span>
-    </div>
-
     <div class="algo-table-wrap">
+
+      <section class="algo-section algo-section-cards">
+        <div class="algo-section-head">
+          <span class="algo-section-icon">🧠</span>
+          <h3 class="algo-section-title-new">Las 4 ideas clave del solver</h3>
+        </div>
+        <div class="algo-explain-cards">
+          <div class="algo-explain-card algo-card-blue">
+            <div class="algo-card-icon">🧮</div>
+            <div class="algo-card-body">
+              <strong>Programación Dinámica</strong>
+              <span>Tabla de decisiones por pasos: cada paso elige un candidato y la tabla guarda el estado para retroceder cuando el camino no lleva a solución.</span>
+            </div>
+          </div>
+          <div class="algo-explain-card algo-card-purple">
+            <div class="algo-card-icon">📐</div>
+            <div class="algo-card-body">
+              <strong>Reglas de descarte</strong>
+              <span>Esquinas, primos, otras pistas dentro y orden por cuadrados — recortan el espacio antes de empezar a buscar.</span>
+            </div>
+          </div>
+          <div class="algo-explain-card algo-card-green">
+            <div class="algo-card-icon">🎯</div>
+            <div class="algo-card-body">
+              <strong>Heurística MRV</strong>
+              <span>Minimum Remaining Values — procesa primero la pista con menos candidatos para detectar contradicciones temprano.</span>
+            </div>
+          </div>
+          <div class="algo-explain-card algo-card-red">
+            <div class="algo-card-icon">✂️</div>
+            <div class="algo-card-body">
+              <strong>Cascada y forward-check</strong>
+              <span>Si una pista queda con un solo candidato se asigna en cadena. Antes de avanzar se verifica que las pendientes sigan teniendo opciones.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="algo-section algo-section-stats">
+        <div class="algo-section-head">
+          <span class="algo-section-icon">📊</span>
+          <h3 class="algo-section-title-new">Resumen del puzzle</h3>
+        </div>
+        <div class="algo-stats-row">
+          <span class="algo-stat-pill">📏 ${cols}×${rows} (${totalCells} celdas)</span>
+          <span class="algo-stat-pill">🔢 ${clues.length} pistas</span>
+          <span class="algo-stat-pill" style="${result.count === 0 ? 'background:#fdd;color:#c00;' : result.count === 1 && !result.timedOut ? 'background:#dfd;color:#065f46;' : ''}">${result.count === 0 ? '✗' : '✓'} ${result.count.toLocaleString()}${result.timedOut ? '+' : ''} solucion${result.count !== 1 ? 'es' : ''}${timeoutNote}</span>
+          <span class="algo-stat-pill">⏱ ${timeStr}</span>
+          <span class="algo-stat-pill">🔍 ${nodesStr} nodos</span>
+          <span class="algo-stat-pill">🌿 ramificación: ${minCandidates}–${maxCandidates} (x̄ ${avgCandidates})</span>
+          ${crossValidHTML}
+        </div>
+        <div class="solve-difficulty-bar">
+          <span class="solve-diff-icon">${diffIcon}</span>
+          <span class="solve-diff-label" style="color:${diffColor}"><strong>${diffLevel}</strong></span>
+          <span class="solve-diff-desc">${diffDesc}</span>
+        </div>
+      </section>
+
       ${solutionMapHTML}
+
+      ${stepByStepHTML}
 
       ${algoExplainHTML}
 
-      <p class="algo-section-title">Analisis por pista (orden MRV — menos opciones primero)</p>
-      <table class="algo-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Posicion</th>
-            <th>Valor</th>
-            <th title="Formas de factorizar el valor como W×H">Factorizaciones</th>
-            <th title="Rectangulos validos que contienen la pista">Candidatos</th>
-            <th>Rectangulo elegido</th>
-            <th>Area</th>
-          </tr>
-        </thead>
-        <tbody>${tableRows}</tbody>
-      </table>
+      <section class="algo-section algo-section-table">
+        <div class="algo-section-head">
+          <span class="algo-section-icon">📋</span>
+          <h3 class="algo-section-title-new">Análisis por pista</h3>
+        </div>
+        <p class="algo-section-sub">Orden MRV: menos opciones primero (más restringidas arriba).</p>
+        <div class="algo-table-scroll">
+          <table class="algo-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Posición</th>
+                <th>Valor</th>
+                <th title="Formas de factorizar el valor como W×H">Factorizaciones</th>
+                <th title="Rectángulos válidos que contienen la pista">Candidatos</th>
+                <th>Rectángulo elegido</th>
+                <th>Área</th>
+              </tr>
+            </thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+        <div class="algo-legend-row">
+          <span class="algo-legend-dot algo-cand-low"></span><span>1-2 opciones (muy restringido)</span>
+          <span class="algo-legend-dot algo-cand-mid"></span><span>3-5 opciones</span>
+          <span class="algo-legend-dot algo-cand-hi"></span><span>6+ opciones</span>
+        </div>
+      </section>
 
-      ${candDetailHTML ? `
-        <p class="algo-section-title" style="margin-top:12px">Detalle de candidatos (pistas mas restringidas)</p>
-        ${candDetailHTML}
-      ` : ''}
-    </div>
-
-    <div class="algo-legend-row">
-      <span class="algo-legend-dot algo-cand-low"></span><span>1-2 opciones (muy restringido)</span>
-      <span class="algo-legend-dot algo-cand-mid"></span><span>3-5 opciones</span>
-      <span class="algo-legend-dot algo-cand-hi"></span><span>6+ opciones</span>
     </div>
   `;
 
@@ -1685,10 +1759,416 @@ function _showSolveInfoModal(result, grid) {
   };
   document.getElementById('solve-info-close').addEventListener('click', close);
   backdrop.onclick = close;
+
+  // ── Secciones colapsables ──
+  inner.querySelectorAll('.algo-section-head').forEach(head => {
+    head.addEventListener('click', () => {
+      const section = head.closest('.algo-section');
+      if (section) section.classList.toggle('algo-section-collapsed');
+    });
+  });
 }
 
 function _showVerifyInfoModal(result, grid) {
   _showSolveInfoModal(result, grid);
+}
+
+// ══════════════════════════════════════════════════════════
+// PASO A PASO DEL SOLVER (visualización del trace real)
+// ══════════════════════════════════════════════════════════
+
+/**
+ * Construye un HTML con tarjetas, una por cada decisión que tomó el
+ * solver. Es la respuesta concreta a "¿cómo encontró ESTA solución?"
+ * en lugar de una explicación genérica del algoritmo.
+ *
+ * Eventos producidos por el solver:
+ *   generar       → estadística inicial de candidatos por pista
+ *   reglas        → la pista X bajó de A→B candidatos por reglas
+ *   cascada       → asignación forzada (1 sólo candidato)
+ *   celda         → poda por celda obligada
+ *   dp_orden      → orden MRV de las pistas pendientes para DP
+ *   dp_pick       → DP eligió un candidato (con cuántos descartó por forward-check)
+ *   forward_skip  → un candidato se descartó porque dejaba a otra pista sin opciones
+ *   backtrack     → ningún candidato funcionó, retrocede
+ *   solucion      → solución completa encontrada
+ *   contradiccion → puzzle imposible
+ *   sin_dp        → la cascada/celdas resolvieron todo, no hizo falta búsqueda
+ */
+
+/**
+ * Verifica que la secuencia de eventos termine en la solución `sol`.
+ * Simula la pila igual que _buildTraceHTML (cascada/dp_pick → coloca o
+ * reemplaza por pistaIdx, backtrack → quita por pistaIdx) y compara la
+ * pila final contra los rectángulos de la solución real.
+ */
+function _verifyTraceMatchesSolution(events, sol, clues) {
+  if (!events || events.length === 0) return false;
+  // Sin solucion final → trace incompleto.
+  const finalSolEv = events[events.length - 1];
+  if (!finalSolEv || finalSolEv.phase !== 'solucion') return false;
+  // Si vino marca de overflow de DP, el trace pudo cortar antes de tiempo.
+  if (events._dpOverflow) return false;
+
+  const stack = [];
+  const place = (pistaIdx, rect) => {
+    const i = stack.findIndex(x => x.pistaIdx === pistaIdx);
+    if (i >= 0) stack[i] = { pistaIdx, rect };
+    else stack.push({ pistaIdx, rect });
+  };
+  for (const e of events) {
+    if (e.phase === 'cascada' || e.phase === 'dp_pick') {
+      place(e.pistaIdx, e.rect);
+    } else if (e.phase === 'backtrack') {
+      const i = stack.findIndex(x => x.pistaIdx === e.pistaIdx);
+      if (i >= 0) stack.splice(i, 1);
+    }
+  }
+
+  if (stack.length !== sol.length) return false;
+  for (const step of sol) {
+    const sr = step.rect;
+    const match = stack.find(s =>
+      s.rect.r0 === sr.r0 && s.rect.c0 === sr.c0 &&
+      s.rect.w === sr.w && s.rect.h === sr.h
+    );
+    if (!match) return false;
+  }
+  return true;
+}
+
+/**
+ * Construye un trace limpio a partir de la solución real cuando el trace
+ * vivo del solver fue incoherente o se cortó. Conserva los eventos de
+ * preprocesamiento (generar, cascada, celda, sin_dp) hasta antes del primer
+ * dp_pick/backtrack/forward_skip y luego añade un dp_pick por cada pista que
+ * todavía no esté asignada, usando el rectángulo de la solución.
+ */
+function _synthesizeTraceFromSolution(rawEvents, sol, clues, rows, cols) {
+  const eventos = [];
+  const yaCubiertas = new Set();
+  let cortar = false;
+  const generar = (rawEvents || []).find(e => e.phase === 'generar');
+  if (generar) eventos.push(generar);
+  for (const e of (rawEvents || [])) {
+    if (cortar) break;
+    if (e.phase === 'generar') continue;
+    if (e.phase === 'dp_pick' || e.phase === 'backtrack' ||
+        e.phase === 'forward_skip' || e.phase === 'dp_orden') {
+      cortar = true;
+      break;
+    }
+    if (e.phase === 'cascada' || e.phase === 'celda' || e.phase === 'sin_dp') {
+      eventos.push(e);
+      if (e.phase === 'cascada' && e.pistaIdx != null) yaCubiertas.add(e.pistaIdx);
+    }
+    // Otros phases (contradiccion, solucion previas, etc.) se ignoran.
+  }
+
+  // Para cada pista en la solución que no haya sido asignada por cascada,
+  // emitimos un dp_pick limpio con el rect real.
+  const findPistaIdx = (clue) => clues.findIndex(c =>
+    c.row === clue.row && c.col === clue.col
+  );
+
+  // Orden: por cantidad de candidatos (MRV) — pero como no recalculamos,
+  // mantenemos el orden de la solución, que ya es válido.
+  for (const step of sol) {
+    const pistaIdx = findPistaIdx(step.clue);
+    if (pistaIdx < 0) continue;
+    if (yaCubiertas.has(pistaIdx)) continue;
+    eventos.push({
+      phase: 'dp_pick',
+      pistaIdx,
+      row: step.clue.row,
+      col: step.clue.col,
+      valor: step.clue.value,
+      candIdx: 0,
+      totalCandidatos: 0,
+      descartadosForward: 0,
+      rect: { r0: step.rect.r0, c0: step.rect.c0, w: step.rect.w, h: step.rect.h },
+      _synth: true
+    });
+  }
+
+  eventos.push({ phase: 'solucion', numero: 1, _synth: true });
+  return eventos;
+}
+
+function _buildTraceHTML(events, rows, cols, clues, synthesized = false) {
+  if (!events || events.length === 0) return '';
+
+  // Mini-grilla SVG. cellPx pequeño para que entre todo.
+  const cellPx = rows * cols > 400 ? 8 : rows * cols > 200 ? 11 : 14;
+  const W = cols * cellPx;
+  const H = rows * cellPx;
+
+  // Construimos un mini-tablero por cada paso.
+  // Necesitamos saber qué rectángulos están "puestos" en ese momento.
+  // Recorremos eventos manteniendo una pila.
+  function rectColor(idx, highlight) {
+    const c = _RECT_PALETTE[idx % _RECT_PALETTE.length];
+    return highlight ? c : c + '55'; // alpha bajo para los previos
+  }
+
+  function drawGrid(rectsActivos, highlightIdx, removedRect = null, opts = {}) {
+    const { eliminados = null, sobrevivientes = null, highlightCell = null } = opts;
+    let svg = `<svg class="trace-mini" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`;
+    // base celdas
+    svg += `<rect width="${W}" height="${H}" fill="#fafafa" stroke="#ddd"/>`;
+    // grid lines
+    for (let i = 1; i < cols; i++) svg += `<line x1="${i*cellPx}" y1="0" x2="${i*cellPx}" y2="${H}" stroke="#eee"/>`;
+    for (let i = 1; i < rows; i++) svg += `<line x1="0" y1="${i*cellPx}" x2="${W}" y2="${i*cellPx}" stroke="#eee"/>`;
+    // rectángulos activos
+    for (let i = 0; i < rectsActivos.length; i++) {
+      const r = rectsActivos[i];
+      const isHL = i === highlightIdx;
+      svg += `<rect x="${r.c0*cellPx + 1}" y="${r.r0*cellPx + 1}" width="${r.w*cellPx - 2}" height="${r.h*cellPx - 2}" fill="${rectColor(i, isHL)}" stroke="${isHL ? '#111' : '#888'}" stroke-width="${isHL ? 2 : 1}"/>`;
+    }
+    // candidatos eliminados (rojo, fantasma)
+    if (eliminados) {
+      for (const r of eliminados) {
+        svg += `<rect x="${r.c0*cellPx + 0.5}" y="${r.r0*cellPx + 0.5}" width="${r.w*cellPx - 1}" height="${r.h*cellPx - 1}" fill="#dc262622" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>`;
+      }
+    }
+    // candidatos sobrevivientes (verde, fantasma)
+    if (sobrevivientes) {
+      for (const r of sobrevivientes) {
+        svg += `<rect x="${r.c0*cellPx + 0.5}" y="${r.r0*cellPx + 0.5}" width="${r.w*cellPx - 1}" height="${r.h*cellPx - 1}" fill="#10b98122" stroke="#10b981" stroke-width="1.5"/>`;
+      }
+    }
+    // celda obligada destacada (estrella/marca)
+    if (highlightCell) {
+      const cx = highlightCell.c * cellPx;
+      const cy = highlightCell.r * cellPx;
+      svg += `<rect x="${cx + 1}" y="${cy + 1}" width="${cellPx - 2}" height="${cellPx - 2}" fill="#0ea5e966" stroke="#0ea5e9" stroke-width="2"/>`;
+    }
+    // backtrack: rect rojo punteado
+    if (removedRect) {
+      svg += `<rect x="${removedRect.c0*cellPx + 1}" y="${removedRect.r0*cellPx + 1}" width="${removedRect.w*cellPx - 2}" height="${removedRect.h*cellPx - 2}" fill="#fee2e2aa" stroke="#dc2626" stroke-width="2" stroke-dasharray="3,2"/>`;
+    }
+    // pistas (números)
+    for (const cl of clues) {
+      const cx = cl.col * cellPx + cellPx / 2;
+      const cy = cl.row * cellPx + cellPx / 2 + cellPx * 0.32;
+      const fs = Math.max(7, Math.floor(cellPx * 0.7));
+      svg += `<text x="${cx}" y="${cy}" text-anchor="middle" font-size="${fs}" font-weight="700" fill="#111">${cl.value}</text>`;
+    }
+    svg += `</svg>`;
+    return svg;
+  }
+
+  // Recorrido secuencial: mantenemos una lista de "rectángulos puestos".
+  // Cada cascada/dp_pick agrega uno; backtrack saca el último.
+  // Hacemos un mapa pistaIdx → posición en la pila para localizar.
+  const rectsPuestos = []; // {pistaIdx, r0, c0, w, h}
+  const cards = [];
+  let stepNum = 0;
+  const pos = (e) => `(fila ${e.row + 1}, col ${e.col + 1})`;
+
+  // Card inicial: pista totales, pistas que ya quedaron forzadas
+  const generar = events.find(e => e.phase === 'generar');
+  if (generar) {
+    cards.push({
+      kind: 'fase',
+      titulo: '🟪 Inicio',
+      cuerpo: `Hay <b>${generar.pistas.length} pistas</b> en el tablero. Para cada una, miro de cuántas formas distintas se puede dibujar su rectángulo. Empiezo a buscar.`,
+      grid: drawGrid([], -1)
+    });
+  }
+
+  // Helper: si la pista ya tiene un rect en la pila (caso típico de DP que
+  // vuelve a un paso y prueba un candidato distinto), REEMPLAZAMOS en lugar
+  // de apilar — si no, una misma pista terminaría dibujada con dos colores
+  // a la vez en la mini-grilla.
+  const colocarRect = (pistaIdx, r) => {
+    const existing = rectsPuestos.findIndex(x => x.pistaIdx === pistaIdx);
+    if (existing >= 0) {
+      rectsPuestos[existing] = { pistaIdx, ...r };
+      return { hlIdx: existing, replaced: true };
+    }
+    rectsPuestos.push({ pistaIdx, ...r });
+    return { hlIdx: rectsPuestos.length - 1, replaced: false };
+  };
+
+  for (const e of events) {
+    if (e.phase === 'cascada') {
+      stepNum++;
+      const r = e.rect;
+      const { hlIdx } = colocarRect(e.pistaIdx, r);
+      cards.push({
+        kind: 'cascada', stepNum,
+        titulo: `🟢 Pista <b>${e.valor}</b> en ${pos(e)} es la única que cabe`,
+        cuerpo: `Después de tachar opciones imposibles, esta pista quedó con <b>una sola forma posible</b>. Sin probar nada, sé que va acá.`,
+        grid: drawGrid(rectsPuestos, hlIdx)
+      });
+    } else if (e.phase === 'dp_pick') {
+      stepNum++;
+      const r = e.rect;
+      const { hlIdx, replaced } = colocarRect(e.pistaIdx, r);
+      let cuerpoDP, tituloDP;
+      if (e._synth) {
+        tituloDP = `🟣 Coloco pista <b>${e.valor}</b> en ${pos(e)}`;
+        cuerpoDP = `La búsqueda con DP probó varios caminos hasta encontrar este rectángulo en la solución final.`;
+      } else {
+        const elegida = e.totalCandidatos > 0
+          ? `Elijo esta pista porque tiene <b>menos opciones (${e.totalCandidatos})</b> que las demás → si fallo, fallo rápido.`
+          : `Pista elegida por orden MRV.`;
+        const desc = e.descartadosForward > 0
+          ? `Probé y descarté <b>${e.descartadosForward}</b> antes porque dejaban a otra pista sin lugar.`
+          : `La primera opción libre encajó.`;
+        tituloDP = replaced
+          ? `🟣 Cambio mi prueba en pista <b>${e.valor}</b> en ${pos(e)} (después de retroceder)`
+          : `🟣 Pruebo pista <b>${e.valor}</b> en ${pos(e)}`;
+        cuerpoDP = `${elegida}<br>${desc}`;
+      }
+      cards.push({
+        kind: 'dp', stepNum,
+        titulo: tituloDP,
+        cuerpo: cuerpoDP,
+        grid: drawGrid(rectsPuestos, hlIdx)
+      });
+    } else if (e.phase === 'backtrack') {
+      stepNum++;
+      // Buscar el último rect de esta pista para "deshacerlo" visualmente
+      let removedRect = null;
+      for (let i = rectsPuestos.length - 1; i >= 0; i--) {
+        if (rectsPuestos[i].pistaIdx === e.pistaIdx) {
+          removedRect = rectsPuestos[i];
+          rectsPuestos.splice(i, 1);
+          break;
+        }
+      }
+      cards.push({
+        kind: 'back', stepNum,
+        titulo: `🟥 Vuelvo atrás en pista <b>${e.valor}</b> en ${pos(e)}`,
+        cuerpo: `Probé <b>${e.candidatosProbados}</b> formas y ninguna funcionó. Borro mi última decisión y pruebo otra del paso anterior.`,
+        grid: drawGrid(rectsPuestos, -1, removedRect)
+      });
+    } else if (e.phase === 'celda') {
+      // No suma rectángulo, pero sí recorta. Card sin grilla nueva
+      // (el efecto se ve en la próxima cascada).
+      const celdaTxt = (e.celdaR != null && e.celdaR >= 0)
+        ? `(fila ${e.celdaR + 1}, col ${e.celdaC + 1})`
+        : '';
+      const eliminadosTxt = (e.eliminados && e.eliminados.length > 0)
+        ? e.eliminados.slice(0, 6).map(r =>
+            `<span class="celda-cand-bad">${r.w}×${r.h} en (${r.r0+1},${r.c0+1})</span>`
+          ).join(' ') + (e.eliminados.length > 6 ? ` <span class="celda-cand-more">+${e.eliminados.length - 6} más</span>` : '')
+        : '';
+      const sobrevivTxt = (e.sobrevivientes && e.sobrevivientes.length > 0)
+        ? e.sobrevivientes.slice(0, 6).map(r =>
+            `<span class="celda-cand-good">${r.w}×${r.h} en (${r.r0+1},${r.c0+1})</span>`
+          ).join(' ') + (e.sobrevivientes.length > 6 ? ` <span class="celda-cand-more">+${e.sobrevivientes.length - 6} más</span>` : '')
+        : '';
+      const celdaGrid = drawGrid(rectsPuestos, -1, null, {
+        eliminados: e.eliminados || [],
+        sobrevivientes: e.sobrevivientes || [],
+        highlightCell: (e.celdaR != null && e.celdaR >= 0) ? { r: e.celdaR, c: e.celdaC } : null
+      });
+      cards.push({
+        kind: 'celda',
+        titulo: `🟦 Casilla obligada ${celdaTxt} → solo la cubre la pista <b>${e.valor}</b> en ${pos(e)}`,
+        grid: celdaGrid,
+        cuerpo: `
+          <div class="celda-explica">
+            <div class="celda-paso">
+              <span class="celda-paso-num">1</span>
+              <span>Miré la casilla ${celdaTxt || 'vacía'}. De todas las pistas, solo <b>${e.valor}</b> en ${pos(e)} tiene formas que la incluyen.</span>
+            </div>
+            <div class="celda-paso">
+              <span class="celda-paso-num">2</span>
+              <span>Como esa casilla debe quedar cubierta sí o sí, la pista <b>${e.valor}</b> está obligada a elegir una forma que la incluya.</span>
+            </div>
+            <div class="celda-paso">
+              <span class="celda-paso-num">3</span>
+              <span>Recorto: paso de <b>${e.candidatosAntes}</b> a <b>${e.candidatosDespues}</b> opciones (descarté <b>${e.candidatosAntes - e.candidatosDespues}</b>).</span>
+            </div>
+            ${eliminadosTxt ? `
+              <div class="celda-bloque">
+                <div class="celda-bloque-tit">❌ Descartadas (no incluyen la casilla):</div>
+                <div class="celda-bloque-list">${eliminadosTxt}</div>
+              </div>` : ''}
+            ${sobrevivTxt ? `
+              <div class="celda-bloque">
+                <div class="celda-bloque-tit">✅ Aún válidas:</div>
+                <div class="celda-bloque-list">${sobrevivTxt}</div>
+              </div>` : ''}
+          </div>`
+      });
+    } else if (e.phase === 'sin_dp') {
+      cards.push({
+        kind: 'fase',
+        titulo: '⚡ Resuelto sin probar nada',
+        cuerpo: 'Cada pista quedó con una única opción posible solo aplicando reglas y efecto dominó. No hizo falta adivinar.'
+      });
+    } else if (e.phase === 'solucion') {
+      cards.push({
+        kind: 'solucion',
+        titulo: '✅ Tablero completo',
+        cuerpo: `Todas las pistas tienen su rectángulo y todas las casillas están cubiertas exactamente una vez.`,
+        grid: drawGrid(rectsPuestos, -1)
+      });
+    } else if (e.phase === 'contradiccion') {
+      cards.push({
+        kind: 'back',
+        titulo: '❌ Imposible',
+        cuerpo: `Una pista quedó sin ninguna opción. Este puzzle no tiene solución.`
+      });
+    }
+  }
+
+  // Resumen arriba — lenguaje simple
+  const counts = {};
+  for (const e of events) counts[e.phase] = (counts[e.phase] || 0) + 1;
+  const summaryItems = [];
+  if (counts.cascada) summaryItems.push(`<b>${counts.cascada}</b> 🟢 forzadas (una sola opción)`);
+  if (counts.celda) summaryItems.push(`<b>${counts.celda}</b> 🟦 recortes por casilla obligada`);
+  if (counts.dp_pick) summaryItems.push(`<b>${counts.dp_pick}</b> 🟣 pruebas`);
+  if (counts.forward_skip) summaryItems.push(`<b>${counts.forward_skip}</b> ⚠️ descartes anticipados`);
+  if (counts.backtrack) summaryItems.push(`<b>${counts.backtrack}</b> 🟥 vueltas atrás`);
+
+  // Mostrar todos los pasos
+  const visibleCards = cards;
+
+  const cardsHTML = visibleCards.map(c => {
+    const numHTML = c.stepNum != null ? `<span class="trace-step-num">${c.stepNum}</span>` : '';
+    const gridHTML = c.grid ? `<div class="trace-grid-box">${c.grid}</div>` : '';
+    return `
+      <div class="trace-card trace-${c.kind}">
+        <div class="trace-card-main">
+          <div class="trace-card-head">${numHTML}<span>${c.titulo}</span></div>
+          <div class="trace-card-body">${c.cuerpo}</div>
+        </div>
+        ${gridHTML}
+      </div>`;
+  }).join('');
+
+  return `
+    <section class="algo-section algo-section-trace">
+      <div class="algo-section-head">
+        <span class="algo-section-icon">📍</span>
+        <h3 class="algo-section-title-new">Cómo encontré esta solución</h3>
+      </div>
+      <p class="algo-section-sub">Cada decisión del solver sobre este tablero, en orden.</p>
+      ${synthesized ? `
+        <div class="trace-synth-banner">
+          ⚠️ El solver exploró tantos caminos en este mapa grande que el detalle paso-a-paso de cada prueba/retroceso sería muy largo. Te muestro el preprocesamiento real (cascada y casillas obligadas) y luego la colocación final desde la solución verificada — el resultado es exactamente el mismo que ves en el tablero.
+        </div>` : ''}
+      <div class="trace-summary">
+        ${summaryItems.length > 0 ? summaryItems.join(' · ') : 'Sin pasos relevantes.'}
+      </div>
+      <div class="trace-legend">
+        <span><b>🟢 Forzada</b> = solo una forma posible, no hay que probar.</span>
+        <span><b>🟦 Casilla obligada</b> = una celda solo la puede tapar una pista.</span>
+        <span><b>🟣 Pruebo</b> = elijo la pista con menos opciones y dibujo una forma.</span>
+        <span><b>🟥 Atrás</b> = la prueba no funcionó, borro y pruebo otra.</span>
+      </div>
+      <div class="trace-flow">
+        ${cardsHTML}
+      </div>
+    </section>
+  `;
 }
 
 function _showStepBar(result, config) {
