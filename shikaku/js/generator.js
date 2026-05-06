@@ -4,7 +4,7 @@
  * Crea particiones aleatorias válidas y verifica solución única.
  */
 
-import { solve, extractClues } from './solver.js?v=37';
+import { solvePropio as solve, extractClues } from './solver_propio.js?v=4';
 import { DIFFICULTY_CONFIG } from './constants.js?v=37';
 
 /**

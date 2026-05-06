@@ -6,7 +6,7 @@
 import { DIFFICULTY_CONFIG, LEVELS_PER_DIFFICULTY, ICONS, SOLVER_CONFIG } from './constants.js?v=37';
 import { Board } from './board.js?v=37';
 import { getSizeForLevel, generatePuzzle } from './generator.js?v=37';
-import { solve, extractClues, getCandidates, getFactorizations, countSolutionsBT, validateSolution } from './solver.js?v=37';
+import { solvePropio as solve, extractClues, getCandidates, getFactorizations, validateSolution } from './solver_propio.js?v=5';
 
 /** Estado global de la aplicación */
 const state = {
@@ -319,9 +319,6 @@ function _renderHomeScreen() {
         <p class="home-subtitle">El rompecabezas de los rectángulos</p>
       </div>
       <div class="home-content">
-        <div id="tab-compete" class="tab-content">
-          ${_renderCompeteTab()}
-        </div>
         <div id="tab-play" class="tab-content active">
           ${_renderPlayTab()}
         </div>
@@ -336,10 +333,6 @@ function _renderHomeScreen() {
         </div>
       </div>
       <nav class="bottom-nav">
-        <button class="nav-tab" data-tab="compete">
-          ${ICONS.TROPHY}
-          <span>Competir</span>
-        </button>
         <button class="nav-tab" data-tab="create">
           ${ICONS.PENCIL}
           <span>Crear</span>
@@ -374,43 +367,7 @@ function _renderHomeScreen() {
   _bindCreateEvents();
   _bindUploadEvents();
   _bindExportEvents();
-  _bindCompeteEvents();
   _bindLibraryEvents();
-}
-
-function _renderCompeteTab() {
-  return `
-    <div class="upload-panel">
-      <div class="upload-format-collapse" style="display:flex; gap:8px; align-items:flex-start;">
-        <details style="flex:1; min-width:0;">
-          <summary>Formato .txt</summary>
-          <div class="code-block">
-            <p>[ANCHO] [ALTO]</p>
-            <p>[CANTIDAD_DE_PISTAS]</p>
-            <p>[FILA] [COLUMNA] [VALOR]</p>
-            <p>...</p>
-            <br>
-            <p class="code-example">Máximo 40×40</p>
-          </div>
-        </details>
-        <span id="compete-reupload-icon" title="Subir otro mapa" style="display:none; width:46px; height:46px; border-radius:10px; background:#e53e3e; color:#fff; font-size:22px; font-weight:bold; cursor:pointer; z-index:5; user-select:none; flex-shrink:0; align-items:center; justify-content:center;">+</span>
-      </div>
-      <div class="upload-dropzone" id="compete-dropzone">
-        <div class="dropzone-content">
-          ${ICONS.UPLOAD}
-          <p>Arrastra tu .txt aqui<br>o haz clic para buscar</p>
-          <input type="file" id="compete-input" accept=".txt" hidden>
-        </div>
-      </div>
-      <div id="compete-error" class="upload-error"></div>
-      <div id="compete-console" class="compete-console" style="display:none;">
-        <div id="compete-output"></div>
-        <div class="c-input-line">
-          <span class="c-prompt">$</span>&nbsp;<input type="text" id="compete-cmd" class="c-input" spellcheck="false" autocomplete="off">
-        </div>
-      </div>
-    </div>
-  `;
 }
 
 function _renderPlayTab() {
@@ -1172,7 +1129,7 @@ function _solveInWorker(grid, clues, onSolutionFound) {
  * el main thread bloquearía el setInterval del autoplay, interrumpiendo
  * la reproducción paso a paso justo cuando el usuario quiere verla.
  */
-function _verifyBtInWorker(grid, clues, maxCount, timeoutMs) {
+function _verifyDlxInWorker(grid, clues, maxCount, timeoutMs) {
   return new Promise((resolve, reject) => {
     // Usamos un worker independiente para no pisar al solver principal
     const w = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
@@ -1182,7 +1139,7 @@ function _verifyBtInWorker(grid, clues, maxCount, timeoutMs) {
     }, (timeoutMs ?? 15000) + 2000);
     w.onmessage = (e) => {
       const msg = e.data;
-      if (msg.type === 'BT_DONE') {
+      if (msg.type === 'DLX_DONE') {
         clearTimeout(timer);
         try { w.terminate(); } catch {}
         resolve(msg.result);
@@ -1197,7 +1154,7 @@ function _verifyBtInWorker(grid, clues, maxCount, timeoutMs) {
       try { w.terminate(); } catch {}
       reject(err);
     };
-    w.postMessage({ type: 'VERIFY_BT', grid, clues, maxCount, timeoutMs });
+    w.postMessage({ type: 'VERIFY_DLX', grid, clues, maxCount, timeoutMs });
   });
 }
 
@@ -1252,11 +1209,11 @@ function _onSolverDone(result, config) {
     // del autoplay quedaría congelado varios segundos y el usuario
     // vería al solver "pensando" antes de arrancar la animación).
     const clues = extractClues(grid);
-    _verifyBtInWorker(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs)
-      .then(bt => {
-        result.btCount = bt.count;
-        result.btTimedOut = bt.timedOut;
-        result.btTimeMs = bt.timeMs;
+    _verifyDlxInWorker(grid, clues, SOLVER_CONFIG.maxSolutions, SOLVER_CONFIG.timeoutMs)
+      .then(dlx => {
+        result.dlxCount = dlx.count;
+        result.dlxTimedOut = dlx.timedOut;
+        result.dlxTimeMs = dlx.timeMs;
       })
       .catch(() => { /* verificación cross-check es opcional */ });
   }
@@ -1502,7 +1459,7 @@ function _showSolveInfoModal(result, grid) {
     diffDesc = 'Alta ramificacion, el solver debe explorar muchos caminos antes de converger.';
   } else {
     diffLevel = 'Extrema'; diffColor = '#7c3aed'; diffIcon = '🟣';
-    diffDesc = 'Espacio combinatorio muy grande, el solver aprovecha al maximo DLX para encontrar la solucion.';
+    diffDesc = 'Espacio combinatorio muy grande, el solver depende fuertemente de la cascada y la verificacion hacia adelante para podar.';
   }
 
   // ── Detailed per-clue rows ──
@@ -1540,48 +1497,55 @@ function _showSolveInfoModal(result, grid) {
       </div>`;
   }).join('');
 
-  // ── How DLX works explanation ──
-  const dlxExplainHTML = `
+  // ── Como funciona el algoritmo (DP por fases) ──
+  const algoExplainHTML = `
     <div class="solve-explain-section">
       <p class="algo-section-title">Como funciona paso a paso</p>
       <div class="solve-steps-flow">
         <div class="solve-flow-step">
           <div class="solve-flow-num">1</div>
           <div class="solve-flow-body">
-            <strong>Modelar como Cobertura Exacta</strong>
-            <span>Cada celda del tablero ${rows}×${cols} (${totalCells} celdas) debe estar cubierta por exactamente un rectangulo. Se crea una matriz binaria donde cada fila es un rectangulo candidato y cada columna es una celda o pista.</span>
+            <strong>Generar candidatos</strong>
+            <span>Para cada pista, se calculan todos los rectangulos cuya area coincide con el valor y que contienen la celda de la pista. Total: ${clueAnalysis.reduce((s,c) => s + c.candidates, 0)} candidatos de ${clues.length} pistas en el tablero ${rows}×${cols}.</span>
           </div>
         </div>
         <div class="solve-flow-step">
           <div class="solve-flow-num">2</div>
           <div class="solve-flow-body">
-            <strong>Generar candidatos</strong>
-            <span>Para cada pista, se generan todos los rectangulos validos cuya area coincide con el valor y que contienen la celda de la pista. Total: ${clueAnalysis.reduce((s,c) => s + c.candidates, 0)} candidatos de ${clues.length} pistas.</span>
+            <strong>Aplicar reglas</strong>
+            <span>Se filtran candidatos imposibles: pistas en bordes/esquinas, primos (solo lineas), rectangulos que cubririan otra pista, y reordenamiento por cuadrados perfectos.</span>
           </div>
         </div>
         <div class="solve-flow-step">
           <div class="solve-flow-num">3</div>
           <div class="solve-flow-body">
-            <strong>Seleccionar columna (MRV)</strong>
-            <span>Se elige la columna con menos 1s — equivale a la pista/celda mas restringida. Esto minimiza la ramificacion (min: ${minCandidates}, max: ${maxCandidates}, promedio: ${avgCandidates}).</span>
+            <strong>Propagacion en cascada</strong>
+            <span>Si una pista queda con un solo candidato viable, se asigna directamente. Eso ocupa celdas y puede dejar a otras pistas con un solo candidato — efecto domino hasta estabilizar.</span>
           </div>
         </div>
         <div class="solve-flow-step">
           <div class="solve-flow-num">4</div>
           <div class="solve-flow-body">
-            <strong>Cubrir y propagar</strong>
-            <span>Al elegir un rectangulo, se "cubren" (eliminan) todas las columnas que toca y todas las filas conflictivas. Dancing Links permite hacer esto en O(1) por enlace.</span>
+            <strong>Celdas obligadas</strong>
+            <span>Cada celda libre debe ser cubierta por algun rectangulo. Si solo los candidatos de UNA pista pueden taparla, esa pista queda restringida a esos candidatos — y al recortar puede disparar nuevamente la cascada.</span>
           </div>
         </div>
         <div class="solve-flow-step">
           <div class="solve-flow-num">5</div>
           <div class="solve-flow-body">
-            <strong>Backtrack si es necesario</strong>
-            <span>Si una columna queda sin filas (sin opciones), se deshace la ultima eleccion ("uncover") y se intenta el siguiente candidato. DLX hace esto eficientemente restaurando enlaces.</span>
+            <strong>Tabla DP por pasos</strong>
+            <span>Para las pistas restantes (orden MRV: ${minCandidates}–${maxCandidates} candidatos, promedio ${avgCandidates}), se construye una tabla de decisiones donde cada paso elige un candidato libre.</span>
           </div>
         </div>
         <div class="solve-flow-step">
           <div class="solve-flow-num">6</div>
+          <div class="solve-flow-body">
+            <strong>Verificacion hacia adelante</strong>
+            <span>Antes de avanzar a la siguiente fila de la tabla, se comprueba que las pistas pendientes aun tienen al menos un candidato libre. Si no, se descarta y prueba el siguiente.</span>
+          </div>
+        </div>
+        <div class="solve-flow-step">
+          <div class="solve-flow-num">7</div>
           <div class="solve-flow-body">
             <strong>Solucion encontrada</strong>
             <span>${hasSolution
@@ -1603,15 +1567,15 @@ function _showSolveInfoModal(result, grid) {
 
   // ── Cross-validation info (Play tab has this) ──
   let crossValidHTML = '';
-  if (result.btCount != null) {
-    const btMatch = result.btCount === result.count || (result.btTimedOut && result.btCount <= result.count);
-    crossValidHTML += `<span class="algo-stat-pill" style="${btMatch ? 'background:#dfd;' : 'background:#fdd;color:#c00;'}">BT: ${result.btCount.toLocaleString()}${result.btTimedOut ? '+' : ''} sol</span>`;
+  if (result.dlxCount != null) {
+    const dlxMatch = result.dlxCount === result.count || (result.dlxTimedOut && result.dlxCount <= result.count);
+    crossValidHTML += `<span class="algo-stat-pill" style="${dlxMatch ? 'background:#dfd;' : 'background:#fdd;color:#c00;'}">DLX: ${result.dlxCount.toLocaleString()}${result.dlxTimedOut ? '+' : ''} sol</span>`;
   }
   if (result.solutionsValid != null) {
     crossValidHTML += `<span class="algo-stat-pill" style="${result.solutionsValid ? 'background:#dfd;' : 'background:#fdd;color:#c00;'}">Validacion: ${result.solutionsValid ? 'OK' : result.validationError}</span>`;
   }
-  if (result.btTimeMs != null) {
-    crossValidHTML += `<span class="algo-stat-pill">BT: ${result.btTimeMs < 1 ? result.btTimeMs.toFixed(6) : result.btTimeMs.toFixed(2)} ms</span>`;
+  if (result.dlxTimeMs != null) {
+    crossValidHTML += `<span class="algo-stat-pill">DLX: ${result.dlxTimeMs < 1 ? result.dlxTimeMs.toFixed(6) : result.dlxTimeMs.toFixed(2)} ms</span>`;
   }
 
   // ── Assemble modal ──
@@ -1629,29 +1593,29 @@ function _showSolveInfoModal(result, grid) {
       <div class="algo-explain-card algo-card-blue">
         <div class="algo-card-icon">🧮</div>
         <div class="algo-card-body">
-          <strong>Algorithm X (DLX)</strong>
-          <span>Algoritmo de Knuth con Dancing Links — resuelve cobertura exacta enlazando/desenlazando nodos en O(1)</span>
+          <strong>Programacion Dinamica</strong>
+          <span>Tabla de decisiones por pasos: cada paso elige un candidato y la tabla guarda el estado para retroceder cuando el camino no lleva a solucion</span>
         </div>
       </div>
       <div class="algo-explain-card algo-card-purple">
         <div class="algo-card-icon">📐</div>
         <div class="algo-card-body">
-          <strong>Cobertura Exacta</strong>
-          <span>Cada celda del tablero debe cubrirse por exactamente un rectangulo — formulacion que DLX explota de forma optima</span>
+          <strong>Reglas de descarte</strong>
+          <span>Esquinas, primos, otras pistas dentro y orden por cuadrados — recortan el espacio antes de empezar a buscar</span>
         </div>
       </div>
       <div class="algo-explain-card algo-card-green">
         <div class="algo-card-icon">🎯</div>
         <div class="algo-card-body">
           <strong>Heuristica MRV</strong>
-          <span>Minimum Remaining Values — ataca primero la pista con menos candidatos para reducir ramificaciones</span>
+          <span>Minimum Remaining Values — procesa primero la pista con menos candidatos para detectar contradicciones temprano</span>
         </div>
       </div>
       <div class="algo-explain-card" style="background:#fef2f2;color:#991b1b;">
         <div class="algo-card-icon">✂️</div>
         <div class="algo-card-body">
-          <strong>Poda y Propagacion</strong>
-          <span>Al elegir un rectangulo, se eliminan todos los candidatos que tocan las mismas celdas — reduce el arbol exponencialmente</span>
+          <strong>Cascada y forward-check</strong>
+          <span>Si una pista queda con un solo candidato se asigna en cadena. Antes de avanzar se verifica que las pendientes sigan teniendo opciones</span>
         </div>
       </div>
     </div>
@@ -1675,7 +1639,7 @@ function _showSolveInfoModal(result, grid) {
     <div class="algo-table-wrap">
       ${solutionMapHTML}
 
-      ${dlxExplainHTML}
+      ${algoExplainHTML}
 
       <p class="algo-section-title">Analisis por pista (orden MRV — menos opciones primero)</p>
       <table class="algo-table">
@@ -2126,7 +2090,7 @@ async function _verifyCreatedMap(grid) {
     });
 
     const countText = result.count.toLocaleString() + (result.timedOut ? '+' : '');
-    const verifyNote = `<br><small style="color:#555">DLX: ${countText} (${result.stats.timeMs.toFixed(0)}ms)</small>`;
+    const verifyNote = `<br><small style="color:#555">Solver: ${countText} (${result.stats.timeMs.toFixed(0)}ms)</small>`;
 
     if (result.count >= 1) {
       const label = result.count === 1 && !result.timedOut ? 'solución única' : `${countText} soluciones`;
@@ -2199,7 +2163,7 @@ async function _verifyUploadedMap(grid) {
     });
 
     const countText = result.count.toLocaleString() + (result.timedOut ? '+' : '');
-    const verifyNote = `<br><small style="color:#555">DLX: ${countText} (${result.stats.timeMs.toFixed(0)}ms)</small>`;
+    const verifyNote = `<br><small style="color:#555">Solver: ${countText} (${result.stats.timeMs.toFixed(0)}ms)</small>`;
 
     if (result.count >= 1) {
       const label = result.count === 1 && !result.timedOut ? 'solución única' : `${countText} soluciones`;
@@ -2339,272 +2303,6 @@ function _handleUploadFile(file) {
  * FILA COL VALOR
  * ...
  */
-// ══════════════════════════════════════════════════════════
-// TAB COMPETIR 🚀
-// ══════════════════════════════════════════════════════════
-
-function _bindCompeteEvents() {
-  const dropzone = document.getElementById('compete-dropzone');
-  const fileInput = document.getElementById('compete-input');
-  const cmdInput = document.getElementById('compete-cmd');
-  if (!dropzone || !fileInput) return;
-
-  dropzone.addEventListener('click', () => fileInput.click());
-  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-  dropzone.addEventListener('drop', (e) => {
-    e.preventDefault(); dropzone.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) _handleCompeteFile(e.dataTransfer.files[0]);
-  });
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files.length > 0) _handleCompeteFile(fileInput.files[0]);
-  });
-
-  // Enter en la terminal ejecuta el comando
-  if (cmdInput) {
-    cmdInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        _handleCompeteCmd();
-      }
-    });
-  }
-
-  // Click en la consola foca el input
-  const consoleEl = document.getElementById('compete-console');
-  if (consoleEl) {
-    consoleEl.addEventListener('click', () => {
-      if (cmdInput && !cmdInput.disabled) cmdInput.focus();
-    });
-  }
-}
-
-/** Estado interno de la terminal Competir */
-let _competeState = null;
-
-function _handleCompeteFile(file) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const text = e.target.result;
-    const result = parseMapFile(text);
-
-    const errorEl = document.getElementById('compete-error');
-    const consoleEl = document.getElementById('compete-console');
-    const outputEl = document.getElementById('compete-output');
-    const cmdInput = document.getElementById('compete-cmd');
-    const dropzoneEl = document.getElementById('compete-dropzone');
-    const reuploadBtn = document.getElementById('compete-reupload-icon');
-
-    if (result.error) {
-      errorEl.innerHTML = `<span class="badge badge-red">${result.error}</span>`;
-      consoleEl.style.display = 'none';
-      return;
-    }
-
-    errorEl.innerHTML = '';
-    dropzoneEl.style.display = 'none';
-    consoleEl.style.display = 'flex';
-
-    const { rows, cols, grid } = result;
-    const clues = extractClues(grid);
-    const fileName = file.name || 'mapa.txt';
-
-    // Guardar estado para la terminal
-    _competeState = { grid, clues, fileName, rows, cols, fileContent: text, solved: false };
-
-    // Mostrar file loaded en terminal
-    outputEl.innerHTML = '';
-    _termLog(outputEl, `<span class="c-dim">shikaku-dlx v1.0 — DLX Algorithm X (Knuth)</span>`);
-    _termLog(outputEl, '');
-    _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">ls</span>`);
-    _termLog(outputEl, `  ${fileName}`);
-    _termLog(outputEl, '');
-    _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">cat</span> ${fileName}`);
-    _termLog(outputEl, `  <span class="c-dim">${cols}x${rows} | ${clues.length} pistas | ${rows * cols} celdas</span>`);
-    _termLog(outputEl, '');
-
-    // Pre-fill command y focus
-    cmdInput.value = `./shikaku-dlx ${fileName}`;
-    setTimeout(() => cmdInput.focus(), 50);
-
-    // Botón volver a subir
-    if (reuploadBtn) {
-      reuploadBtn.style.display = 'flex';
-      reuploadBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        errorEl.innerHTML = '';
-        consoleEl.style.display = 'none';
-        outputEl.innerHTML = '';
-        cmdInput.value = '';
-        dropzoneEl.style.display = 'flex';
-        reuploadBtn.style.display = 'none';
-        _competeState = null;
-        document.getElementById('compete-input').value = '';
-      };
-    }
-  };
-  reader.readAsText(file);
-}
-
-function _termLog(outputEl, html) {
-  outputEl.innerHTML += html + '\n';
-  outputEl.parentElement.scrollTop = outputEl.parentElement.scrollHeight;
-}
-
-/**
- * Formatea un tiempo en milisegundos con unidad incluida.
- * Siempre devuelve una cadena con sufijo ("ms", "µs" o "s").
- * El llamador NO debe añadir " ms" extra.
- */
-function _fmtTime(ms) {
-  if (!isFinite(ms) || ms < 0) return '0ms';
-  if (ms < 0.001) return (ms * 1000).toFixed(3) + 'µs';
-  if (ms < 1)    return ms.toFixed(3) + 'ms';
-  if (ms < 1000) return ms.toFixed(3) + 'ms';
-  return (ms / 1000).toFixed(3) + 's';
-}
-
-/**
- * Renderiza una solución como mapa ASCII para mostrarla en la terminal.
- * Cada región se identifica con un carácter único (A-Z, a-z, 0-9).
- */
-function _solutionToAscii(solution, rows, cols, grid) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  const map = Array.from({ length: rows }, () => new Array(cols).fill('.'));
-  for (let i = 0; i < solution.length; i++) {
-    const { rect } = solution[i];
-    const ch = chars[i % chars.length];
-    for (let r = rect.r0; r < rect.r0 + rect.h; r++) {
-      for (let c = rect.c0; c < rect.c0 + rect.w; c++) {
-        map[r][c] = ch;
-      }
-    }
-  }
-  // Marcar las pistas con su valor (sobreescribe char de región)
-  if (grid) {
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (grid[r][c] > 0) map[r][c] = String(grid[r][c]);
-      }
-    }
-  }
-  // Ancho uniforme para alinear columnas
-  let maxLen = 1;
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++)
-      if (map[r][c].length > maxLen) maxLen = map[r][c].length;
-  return map.map(row => '  ' + row.map(cell => cell.padStart(maxLen, ' ')).join(' ')).join('\n');
-}
-
-function _handleCompeteCmd() {
-  const outputEl = document.getElementById('compete-output');
-  const cmdInput = document.getElementById('compete-cmd');
-  const raw = cmdInput.value.trim();
-  cmdInput.value = '';
-
-  if (!raw) return;
-
-  // Eco del comando
-  _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">${raw}</span>`);
-
-  if (!_competeState) {
-    _termLog(outputEl, `  <span class="c-err">no hay archivo cargado</span>`);
-    _termLog(outputEl, '');
-    return;
-  }
-
-  const { grid, clues, fileName, rows, cols, fileContent } = _competeState;
-
-  // Comandos disponibles
-  if (raw === 'ls') {
-    _termLog(outputEl, `  ${fileName}`);
-    _termLog(outputEl, '');
-  } else if (raw === `cat ${fileName}` || raw === 'cat *') {
-    _termLog(outputEl, `  <span class="c-dim">${cols}x${rows} | ${clues.length} pistas | ${rows * cols} celdas</span>`);
-    _termLog(outputEl, '');
-  } else if (raw === `nano ${fileName}`) {
-    // Mostrar contenido del archivo en formato "nano"
-    _termLog(outputEl, fileContent.split('\n').map((line, i) =>
-      `  ${String(i + 1).padEnd(3)} ${line}`
-    ).join('\n'));
-    _termLog(outputEl, '');
-    _termLog(outputEl, `<span class="c-dim">[ leer ${fileName} ]</span>`);
-    _termLog(outputEl, '');
-  } else if (raw === 'clear') {
-    outputEl.innerHTML = '';
-  } else if (raw === 'help') {
-    _termLog(outputEl, `  <span class="c-dim">ls</span>                      listar archivos`);
-    _termLog(outputEl, `  <span class="c-dim">cat ${fileName}</span>          ver info del mapa`);
-    _termLog(outputEl, `  <span class="c-dim">nano ${fileName}</span>         ver contenido del archivo`);
-    _termLog(outputEl, `  <span class="c-dim">./shikaku-dlx ${fileName}</span>    resolver (DLX Algorithm X)`);
-    _termLog(outputEl, `  <span class="c-dim">clear</span>                    limpiar terminal`);
-    _termLog(outputEl, '');
-  } else if (raw.startsWith('./shikaku-dlx')) {
-    // Resolver — medimos tiempo real desde la UI y ejecutamos en el hilo
-    // principal, pero con un yield previo para que el "solving..." se pinte.
-    cmdInput.disabled = true;
-    _termLog(outputEl, `  <span class="c-dim">solving...</span>`);
-
-    // Marcador para poder reemplazar la línea "solving..." cuando llegue la
-    // primera solución (streaming)
-    const solvingLineIdx = outputEl.children.length - 1;
-    const tStart = performance.now();
-    let firstShownAt = null;
-    let lastProgressCount = 0;
-
-    const onSolution = (sol, count) => {
-      lastProgressCount = count;
-      if (sol && firstShownAt === null) {
-        firstShownAt = performance.now() - tStart;
-        _termLog(outputEl,
-          `  <span class="c-ok">✓ primera solución</span> <span class="c-time">${_fmtTime(firstShownAt)}</span> <span class="c-dim">(buscando más…)</span>`);
-      }
-    };
-
-    // Ceder al navegador para que el mensaje "solving..." se renderice
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const result = solve(grid, clues, Infinity, 60000, null, onSolution);
-        const elapsed = performance.now() - tStart;
-        const ms = result.stats.timeMs;   // tiempo puro del solver
-        const nodes = result.stats.nodesExplored;
-        const countLabel = result.count.toLocaleString() + (result.timedOut ? '+' : '');
-
-        if (result.count >= 1) {
-          _termLog(outputEl,
-            `  <span class="c-ok">✓ solved</span> <span class="c-time">${_fmtTime(ms)}</span> <span class="c-dim">(total UI: ${_fmtTime(elapsed)})</span>`);
-          _termLog(outputEl,
-            `  <span class="c-dim">${nodes.toLocaleString()} nodos | ${ms > 0 ? Math.round(nodes / ms * 1000).toLocaleString() : '∞'} nodos/s</span>`);
-          _termLog(outputEl,
-            `  <span class="c-dim">soluciones: ${countLabel} · almacenadas: ${result.solutions.length}${result.timedOut ? ' · ⏱ timeout' : ''}</span>`);
-          _competeState.solved = true;
-
-          // Mostrar la primera solución como mapa ASCII
-          const firstSol = result.solutions[0];
-          if (firstSol) {
-            _termLog(outputEl, '');
-            _termLog(outputEl, `<span class="c-prompt">$</span> <span class="c-cmd">./shikaku-dlx ${fileName} --print</span>`);
-            _termLog(outputEl,
-              `<pre class="c-map">${_solutionToAscii(firstSol, rows, cols, grid)}</pre>`);
-          }
-        } else if (result.timedOut) {
-          _termLog(outputEl, `  <span class="c-err">⏱ timeout</span> <span class="c-dim">(${_fmtTime(ms)})</span>`);
-          _termLog(outputEl, `  <span class="c-dim">${nodes.toLocaleString()} nodos explorados</span>`);
-        } else {
-          _termLog(outputEl, `  <span class="c-err">✗ sin solucion</span> <span class="c-dim">(${_fmtTime(ms)})</span>`);
-        }
-
-        _termLog(outputEl, '');
-        cmdInput.disabled = false;
-        cmdInput.focus();
-      });
-    });
-  } else {
-    _termLog(outputEl, `  <span class="c-err">command not found:</span> ${raw}`);
-    _termLog(outputEl, `  <span class="c-dim">escribe</span> help <span class="c-dim">para ver comandos</span>`);
-    _termLog(outputEl, '');
-  }
-}
 
 function _showToast(msg) {
   let toast = document.getElementById('ui-toast');
