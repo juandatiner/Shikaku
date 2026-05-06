@@ -1,0 +1,12 @@
+# Claude / AI
+.claude/
+.cursor/
+.aider*
+.continue/
+.codeium/
+.github/copilot/
+CLAUDE.md
+GEMINI.md
+.anthropic/
+.openai/
+*.ai-context
