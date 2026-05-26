@@ -1,15 +1,12 @@
 node_modules/
 npm-debug.log*
 
-# Claude / AI
-.claude/
-.cursor/
-.aider*
-.continue/
-.codeium/
-.github/copilot/
-CLAUDE.md
-GEMINI.md
-.anthropic/
-.openai/
-*.ai-context
+# Editores / IDE locales
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Entornos locales
+.env
+.env.local
