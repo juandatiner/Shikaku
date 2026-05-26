@@ -1,21 +1,19 @@
-# Shikaku — Cómo se resuelve el puzzle
+# Shikaku — Juego y solucionador
 
-Documentación del algoritmo del solver propio (`shikaku/js/solver_propio.js`).
-Pensada para que cualquiera entienda paso a paso cómo el programa razona.
+App web para jugar **Shikaku** y, sobre todo, para mostrar **cómo el computador lo resuelve paso a paso**.
+Este README explica el juego, las ideas que usa el algoritmo y cómo se organiza el código, en lenguaje sencillo.
 
 ---
 
-## 1. Las reglas del juego
+## 1. ¿Qué es Shikaku?
 
-Shikaku se juega sobre una grilla cuadriculada con algunos números colocados dentro.
+Shikaku es un puzzle japonés que se juega en una grilla cuadriculada con algunos números.
 
-Hay que dividir todo el tablero en **rectángulos** que cumplan tres condiciones:
+**Objetivo**: partir el tablero en **rectángulos** de modo que:
 
-1. Cada rectángulo contiene **exactamente un número**.
-2. El **área** del rectángulo (`ancho × alto`) es **igual** al número que tiene dentro.
-3. Los rectángulos **no se solapan** y entre todos cubren **todo** el tablero.
-
-Ejemplo de un mapa **resuelto** de 4×4:
+1. Cada rectángulo contenga **exactamente un número**.
+2. El **área** del rectángulo (`ancho × alto`) sea **igual a ese número**.
+3. Los rectángulos **no se solapen** y entre todos **cubran todo** el tablero.
 
 ```
 ANTES (puzzle)              DESPUÉS (solución)
@@ -30,96 +28,86 @@ ANTES (puzzle)              DESPUÉS (solución)
 +---+---+---+---+           +---+---+---+---+
 ```
 
-(suma de pistas = 6 + 4 + 2 + 4 = 16 = 4×4 ✓)
+Comprobación: 6 + 4 + 2 + 4 = 16 = 4×4. ✓
 
 ---
 
-## 2. Pistas para humanos (y para el algoritmo)
+## 2. ¿Cómo lo resolvería una persona?
 
-Antes de mostrar el código, repasemos las **observaciones** que ayudan tanto a una persona como al solver. El programa las codifica como reglas.
+Antes de mirar código, conviene entender las **observaciones humanas** — porque el algoritmo no hace nada distinto, solo más rápido.
 
-### 2.1 Tabla de factorizaciones (formas posibles del 2 al 10)
+### 2.1 Tabla de formas posibles
 
-Cada número se puede dibujar como rectángulo solo de tantas formas como factorizaciones tenga.
+Cada número solo puede ser rectángulo de tantas formas como divisores tenga:
 
-| Valor | Formas | Comentario |
-|-------|--------|-----------|
-| **2** | `1×2` `2×1` | Primo → siempre lineal |
-| **3** | `1×3` `3×1` | Primo → siempre lineal |
-| **4** | `1×4` `4×1` `2×2` | Lineal o cuadrado |
-| **5** | `1×5` `5×1` | Primo → lineal |
-| **6** | `1×6` `2×3` `3×2` `6×1` | 4 formas |
-| **7** | `1×7` `7×1` | Primo → lineal |
-| **8** | `1×8` `2×4` `4×2` `8×1` | Sin cuadrado |
-| **9** | `1×9` `3×3` `9×1` | Lineal o cuadrado |
-| **10** | `1×10` `2×5` `5×2` `10×1` | Sin cuadrado |
+| Valor | Formas posibles      | Comentario             |
+|-------|----------------------|------------------------|
+| **2** | `1×2` `2×1`          | Primo → siempre línea  |
+| **3** | `1×3` `3×1`          | Primo → siempre línea  |
+| **4** | `1×4` `4×1` `2×2`    | Línea o cuadrado       |
+| **5** | `1×5` `5×1`          | Primo → siempre línea  |
+| **6** | `1×6` `2×3` `3×2` `6×1` | 4 formas            |
+| **7** | `1×7` `7×1`          | Primo → siempre línea  |
+| **8** | `1×8` `2×4` `4×2` `8×1` | Sin cuadrado        |
+| **9** | `1×9` `3×3` `9×1`    | Línea o cuadrado       |
 
-Conclusión: los **primos** (2, 3, 5, 7) son los más fáciles para empezar — solo pueden ser líneas.
+→ **Los primos** (2, 3, 5, 7, 11…) son los más fáciles para empezar. Solo pueden ser líneas.
 
 ### 2.2 Pistas en bordes y esquinas
 
-Si una pista está pegada a un borde del tablero, su rectángulo está obligado a "pegarse" a ese borde (no puede flotar fuera).
+Si una pista está pegada a un borde, su rectángulo está **obligado** a pegarse a ese borde (no puede flotar fuera).
 
 ```
-Pista en esquina (0,0) con valor 6:
+Pista en esquina (0,0) con valor 6, tablero 6×6:
+
 +---+---+---+---+---+---+
 | 6 |   |   |   |   |   |
 +---+---+---+---+---+---+
+         ...
 
-→ El rectángulo tiene que empezar en la esquina (0,0).
-   Solo dos opciones quedan:  1×6 horizontal  o  6×1 vertical.
+→ Solo dos opciones:  1×6 horizontal  o  6×1 vertical.
 ```
 
 ### 2.3 Cuadrados perfectos en el centro
 
-Si la pista vale 4, 9, 16... y está cerca del centro, su forma natural es el **cuadrado**: 2×2, 3×3, 4×4. Lejos del centro, suele ser línea.
+Si la pista vale 4, 9, 16… y está cerca del centro, su forma natural suele ser el **cuadrado** (2×2, 3×3, 4×4). Lejos del centro, suele tocarle ser línea.
 
-### 2.4 Otra pista dentro = imposible
+### 2.4 Otra pista adentro = imposible
 
-Un rectángulo no puede comerse otra pista. Si dibujar 1×6 implica abarcar la celda donde hay un `3`, ese candidato se descarta.
+Un rectángulo no puede comerse otra pista. Si `1×6` implicaría abarcar la celda donde hay un `3`, ese candidato muere.
 
-### 2.5 Suma total
+### 2.5 La suma siempre cuadra
 
-`Σ (valores de pistas) = filas × columnas`. Si no se cumple, el puzzle está mal definido y no tiene solución.
-
-### 2.6 Pares e impares
-
-- **Valor par grande** (8, 10, 12...) → puede llenar una franja entera. Mirar primero si ocupa toda una fila/columna.
-- **Valor impar primo** (3, 5, 7...) → línea forzada, muy rígida. Útil para anclar.
+`Σ (valores de pistas) = filas × columnas`. Si no se cumple, el puzzle está mal definido. Se chequea antes de resolver.
 
 ---
 
-## 3. El algoritmo paso a paso
+## 3. El algoritmo en cinco fases
 
-El solver trabaja en **cinco fases**. Las primeras dos son preparación, las dos del medio son **propagación lógica** (no requieren probar nada), y la última es **búsqueda con vuelta atrás** sólo si lo anterior no alcanzó.
+El solver trabaja en **cinco fases**. Las primeras cuatro son **propagación lógica** (no adivina nada). La quinta solo se usa si todavía quedan dudas.
 
 ```
-   ┌─────────────────────────────────────────┐
-   │  Fase 1: Generar candidatos             │
-   │  Fase 2: Aplicar reglas (filtrar)       │
-   │  Fase 3: Cascada (forzados)             │
-   │  Fase 4: Celdas obligadas               │
-   │  Fase 5: Tabla DP + forward-check       │
-   └─────────────────────────────────────────┘
+   ┌─────────────────────────────────────────────────┐
+   │  Fase 1: Generar candidatos                     │
+   │  Fase 2: Aplicar reglas (filtrar imposibles)    │
+   │  Fase 3: Cascada (asignar forzados en cadena)   │
+   │  Fase 4: Celdas obligadas (¿quién me cubre?)    │
+   │  Fase 5: Backtracking iterativo (probar)        │
+   └─────────────────────────────────────────────────┘
 ```
-
----
 
 ### Fase 1 — Generar candidatos
 
-Para cada pista, calcular **todos** los rectángulos que:
-- tienen área igual al valor de la pista,
+Para cada pista, lista **todos** los rectángulos que cumplen:
+
+- área = valor,
 - contienen la celda de la pista,
-- entran dentro del tablero.
+- entran en el tablero.
 
-Ejemplo: pista `6` en (0,0) en un tablero 4×4.
-
-Formas posibles: `1×6` `6×1` `2×3` `3×2`.
-
-Pero `1×6` no entra (el tablero solo tiene 4 columnas). Tampoco `6×1`. Quedan `2×3` y `3×2`. Ahora muevo cada forma para que **(0,0) esté adentro**:
+Ejemplo (pista `6` en (0,0), tablero 4×4):
 
 ```
-2×3 cabe solo en una posición:    3×2 cabe solo en una posición:
+2×3 cabe solo aquí:               3×2 cabe solo aquí:
 +---+---+---+---+                 +---+---+---+---+
 |###|###|###|   |                 |###|###|   |   |
 +---+---+---+---+                 +---+---+---+---+
@@ -127,94 +115,65 @@ Pero `1×6` no entra (el tablero solo tiene 4 columnas). Tampoco `6×1`. Quedan 
 +---+---+---+---+                 +---+---+---+---+
 |   |   |   |   |                 |###|###|   |   |
 +---+---+---+---+                 +---+---+---+---+
-|   |   |   |   |                 |   |   |   |   |
-                                  +---+---+---+---+
 ```
 
-→ Pista `6` en (0,0) tiene **2 candidatos**.
-
----
+Resultado: la pista `6` tiene **2 candidatos**.
 
 ### Fase 2 — Aplicar reglas
 
-Tachar candidatos imposibles antes de probar nada:
+Tacha candidatos imposibles **antes de probar nada**:
 
-| Regla | Qué descarta |
-|-------|---|
-| **Esquinas** | Rectángulos que no se "pegan" al borde donde está la pista. |
-| **Primos** | Para 2,3,5,7,11..., descarta todo lo que no sea línea. |
-| **Otra pista adentro** | Cualquier candidato que abarcaría la celda de otra pista. |
-| **Cuadrado central** | (Reordena) prueba primero el cuadrado si la pista está al centro, último si está al borde. |
-
----
+| Regla              | Qué descarta                                                              |
+|--------------------|---------------------------------------------------------------------------|
+| **Esquinas**       | Rectángulos que no se "pegan" al borde donde está la pista.               |
+| **Primos**         | Para 2, 3, 5, 7, 11…, descarta todo lo que no sea línea.                  |
+| **Otra pista adentro** | Cualquier candidato que abarque la celda de otra pista.               |
+| **Cuadrado centro/borde** | Reordena: cuadrado primero si la pista está al centro, último si está al borde. |
 
 ### Fase 3 — Cascada (efecto dominó)
 
-Buscar pistas que tengan **un solo candidato** después del filtrado.
+Si alguna pista quedó con **un solo candidato**, se asigna. Esa asignación ocupa celdas → otras pistas pierden candidatos → puede quedar otra con un solo candidato → se asigna también. Y así hasta que nada cambie.
 
 ```
-Pista X tiene 1 candidato       →    Asignar.
-Asignar ocupa celdas            →    Otras pistas pierden candidatos
-                                     que se solapaban.
-Algunas quedan con 1 sola opción →    Asignar de nuevo.
-Repetir hasta que nada cambie.
+1 candidato → ASIGNAR → otras pierden opciones → más quedan con 1 candidato → ASIGNAR…
 ```
 
-En tableros chicos (5×5, 6×6) la cascada **resuelve casi todo sola**.
+En tableros pequeños (4×4 a 8×8) esto **resuelve casi todo solo**.
 
----
+### Fase 4 — Celdas obligadas
 
-### Fase 4 — Celdas obligadas (la más nueva, la que más poda)
+Idea clave: cada celda libre del tablero **tiene que ser cubierta por alguien**. Para cada celda, preguntamos:
 
-**Idea clave**: cada celda del tablero **debe** ser cubierta por algún rectángulo de alguna pista. Para cada celda libre, miramos:
+> ¿Qué pistas tienen al menos un candidato que pase por aquí?
 
-> ¿Quién puede taparme?
+Si la respuesta es **una sola pista**, esa pista está **obligada** a cubrir esta celda. Los candidatos suyos que no pasen por ella se descartan, y eso suele despertar más cascadas.
 
-Si la respuesta es **una sola pista**, entonces esa pista está obligada a usar un candidato que cubra esta celda. Los demás candidatos suyos se descartan.
+Esta fase fue la que más rendimiento aportó:
 
-```
-       col 0   col 1   col 2   col 3
-row 0  ┌─────┬─────┬─────┬─────┐
-       │  ?  │  ?  │     │     │
-row 1  ├─────┼─────┼─────┼─────┤
-       │  ?  │ pivote 9  │     │
-row 2  ├─────┼─────┼─────┼─────┤
-       │     │     │     │     │
-       └─────┴─────┴─────┴─────┘
-```
+- 13×13: `506 ms → 0.6 ms`
+- 14×14: `17.9 s → 52 ms`
+- 23×23: timeout → `552 ms`
 
-Si las celdas marcadas con `?` solo pueden ser cubiertas por candidatos del `9`, entonces el `9` está obligado a ocuparlas. Al recortar sus candidatos, despierta cascada → más pistas forzadas. Es muy potente.
-
-**Resultado**: el bench mejoró así:
-- D3-L9 (13×13): de **506 ms → 0.6 ms**
-- D3-L10 (14×14): de **17.9 s → 52 ms**
-- D4-L8 (23×23): de timeout → **552 ms**
-
----
-
-### Fase 5 — Tabla DP + forward-check
+### Fase 5 — Backtracking iterativo con tabla de decisiones
 
 Si todavía quedan pistas con varias opciones, hay que **probar combinaciones**.
-
-Se construye una **tabla de decisiones** donde cada fila es un paso (una pista) y se anota qué candidato eligió.
+Se mantiene una **tabla** donde cada fila es un paso (= una pista pendiente) y se anota qué candidato se eligió.
 
 ```
         elegido
 paso 0  →  candidato 2 de pista A
 paso 1  →  candidato 0 de pista B
 paso 2  →  candidato ?  ← buscando…
-paso 3  →  ?
-paso 4  →  ?
 ```
 
-**MRV** (Minimum Remaining Values): se ordenan las pistas pendientes de **menos candidatos primero**. Así, si vamos a fallar, fallamos rápido.
+Detalles importantes:
 
-**Forward-check**: antes de avanzar al paso siguiente, se verifica que **todas** las pistas pendientes sigan teniendo al menos un candidato libre. Si una se quedó sin opciones, se descarta este candidato y se prueba el siguiente — **sin entrar a explorar la rama muerta**.
-
-Si en un paso ningún candidato funciona → **backtrack**: se borra la decisión, se libera la celda y se vuelve a probar el paso anterior con la siguiente opción.
+- **MRV (Minimum Remaining Values)**: las pistas pendientes se procesan **de menos candidatos a más**. Así, si vamos a fallar, fallamos rápido.
+- **Forward-check**: antes de avanzar, verificamos que **todas las pistas siguientes** sigan teniendo al menos un candidato libre. Si no, descartamos sin entrar a la rama muerta.
+- **Iterativo (no recursivo)**: la tabla guarda el estado en cada nivel y un bucle `while` avanza/retrocede. Cero stack frames.
 
 ```
-avanzar:   paso 0 → paso 1 → paso 2  ✓ todas viables
+avanzar:   paso 0 → paso 1 → paso 2  ✓
                                 ↓
                             paso 3   ✗ contradicción
                                 ↑
@@ -225,177 +184,149 @@ Cuando se llena toda la tabla → **solución encontrada**.
 
 ---
 
-## 4. Ejemplos por tamaño
+## 4. Verificador independiente (DLX)
 
-### 4×4 (Principiante)
+El solver principal es `solver_propio.js`. Pero, ¿cómo sabemos que su respuesta es **correcta**? Para eso existe un segundo algoritmo: **DLX** (Dancing Links / Algorithm X de Knuth), en `solver_dlx.js`.
+
+### 4.1 ¿Para qué sirve?
+
+DLX **no resuelve puzzles para el jugador**. Es un **verificador cruzado**: corre el mismo puzzle con un algoritmo estructuralmente distinto y cuenta cuántas soluciones encuentra. La app compara:
 
 ```
-Puzzle:                Soluciones esperadas: 1
-+---+---+---+---+      Tiempo solver: < 1 ms
-|   |   | 6 |   |      Lo resuelve la cascada sola.
-+---+---+---+---+
-| 4 |   |   |   |
-+---+---+---+---+
-|   |   |   | 2 |
-+---+---+---+---+
-|   |   | 4 |   |
-+---+---+---+---+
+   solver_propio  ───▶  N soluciones
+                                       ¿coinciden?
+   solver_dlx     ───▶  M soluciones
 ```
 
-### 9×9 (Medio)
+- **`N === M`** → ambos algoritmos están de acuerdo, la respuesta es confiable.
+- **`N !== M`** → hay un bug en alguno. Aparece pill roja en el modal de algoritmo.
 
-Tablero medio con ~16-20 pistas. La cascada y las celdas obligadas resuelven en pocos ms.
+### 4.2 ¿Por qué DLX y no otro?
 
-### 15×15 (Difícil)
+Porque ataca el problema con una representación **completamente distinta**:
 
-~25-30 pistas. Mezcla de pistas chicas (2,3,4) y grandes (8,9,12). Suelen resolver en **<1 ms** porque las pistas chicas anclan el tablero rápidamente.
+| Aspecto | `solver_propio.js`                                  | `solver_dlx.js`                       |
+|---------|-----------------------------------------------------|---------------------------------------|
+| Idea    | Propagación lógica + backtracking con tabla         | Cobertura exacta + listas enlazadas   |
+| Poda    | Reglas, cascada, celdas obligadas, forward-check    | "Choose column with fewest options"   |
+| Estado  | Sets de candidatos por pista                        | Matriz dispersa con punteros          |
 
-### 25×25 (Difícil-Experto)
+Si dos algoritmos tan distintos coinciden en el conteo, es **muy improbable** que ambos tengan el mismo bug. Misma idea que usar dos compiladores para validar código.
 
-Aquí empieza a depender de la distribución:
-- Mucha pista chica → cascada resuelve casi todo, **<10 ms**.
-- Pocas pistas grandes → más combinatoria, puede tardar segundos o necesitar la tabla DP.
+### 4.3 Beneficios
 
-### 40×40 (Experto)
+- **Detección temprana de bugs** en el solver propio: si tocamos algo y rompemos, DLX lo grita en el siguiente puzzle.
+- **Confianza al generar mapas**: el generador requiere "solución única"; DLX la confirma de forma independiente.
+- **No afecta al juego**: corre en un Web Worker aparte.
 
-Tableros enormes con 20-130 pistas. Si están densos (muchas pistas) la cascada explota y resuelve en **ms**. Si son ralos (pocas pistas grandes) la búsqueda DP puede tardar varios segundos.
+> Resumen: el solver propio **juega**, DLX **vigila**.
 
 ---
 
-## 5. Resultados del benchmark (50 mapas)
+## 5. Funciones especiales de la app
 
-5 dificultades × 10 niveles. Solver con todas las fases activas, timeout 30s, hasta 5 reintentos:
+### 5.1 Precomputo silencioso en mapas Difícil/Experto
 
-```
-D1 (4×4–5×5):     10/10  ·  total 1.15 ms    ·  máx 0.40 ms
-D2 (6×6–8×8):     10/10  ·  total 17 ms      ·  máx 13.8 ms
-D3 (9×9–14×14):   10/10  ·  total 398 ms     ·  máx 341 ms
-D4 (15×15–25×25): 10/10  ·  total 59.8 s     ·  máx 30 s
-D5 (26×26–40×40): 10/10  ·  total 30.8 s     ·  máx 30 s
-TOTAL:            50/50  ·  acumulado 91 s
-```
+En **D4 (Difícil)** y **D5 (Experto)** los tableros son grandes (15×15 a 40×40) y el solver puede tardar varios segundos.
 
-Antes de agregar la fase 4 (celdas obligadas): **41/50** resueltos, varios timeouts.
-Después: **50/50**, los lentos son grandes con baja densidad de pistas.
+Para que la experiencia sea fluida:
 
----
+- **Apenas entras al mapa**, el solver arranca en segundo plano (Web Worker silencioso).
+- El **botón Pista** queda inhabilitado hasta que la búsqueda termine — así nunca se traba la UI.
+- Si presionas **Resolver** mientras todavía está buscando, te enganchas a esa misma búsqueda y ves el progreso real (`Resolviendo… 300K nodos`).
+- Si presionas **Resolver** después que terminó, la respuesta es instantánea (ya estaba cacheada).
+- Si **reinicias** el nivel o **vuelves al menú**, la búsqueda se cancela limpiamente.
 
-## 6. Resumen en una frase
+### 5.2 Paso a paso visual ("¿cómo encontró esta solución?")
 
-> **Tachar lo imposible, encadenar lo obligatorio, restringir por celdas, y probar lo poco que quede con paso atrás.**
+Cuando el solver termina, aparece un botón que abre un modal con la **explicación visual** del razonamiento:
 
-Esa es toda la idea.
+- Lista de **decisiones** (cada cascada, cada `dp_pick`, cada `backtrack`) con mini-grillas.
+- **Verificador del trace**: si el trace se corta o se enreda en mapas grandes, se **sintetiza** un trace limpio a partir de la solución real (avisando con banner ámbar).
+- **Estadísticas**: candidatos por pista, MRV, tiempo, comparación con DLX.
 
----
+Topes para no saturar la UI:
 
-## 7. El explicador (paso a paso visual)
+- 8 000 eventos máximo.
+- 800 `dp_pick + backtrack`.
+- 30 `forward_skip` mostrados (el resto se cuentan pero no se pintan).
+- Eventos de cierre (`solucion`, `contradiccion`) siempre entran.
 
-Cuando el solver termina, aparece un botón que abre el modal **"¿Cómo encontró esta solución?"**. Ahí mostramos, en lenguaje simple y con mini-tableros, cada decisión que tomó el algoritmo para llegar al resultado.
+### 5.3 Generador con solución única
 
-### 7.1 La idea general
+`generator.js` crea puzzles aleatorios y verifica con el solver que tengan **exactamente una solución**. Si no, reintenta.
 
-El solver no solo resuelve el puzzle: mientras lo hace, va **avisando** cada cosa que hace. La interfaz escucha esos avisos y los pinta como tarjetas, una abajo de otra, igual que un diario de la búsqueda.
+### 5.4 Tabs de la pantalla principal
 
-```
-       ┌──────────────┐  emite eventos   ┌──────────────┐
-       │   SOLVER     │  ─────────────▶  │  EXPLICADOR  │
-       │  resolviendo │                  │   pinta UI   │
-       └──────────────┘                  └──────────────┘
-                                               │
-                                               ▼
-                                ¿La explicación llega
-                                  a la misma solución
-                                   que ves jugando?
-                                      ┌────┴────┐
-                                      │         │
-                                      SÍ        NO
-                                      │         │
-                                  mostrar   reconstruir
-                                  tal cual   desde la
-                                            solución real
-```
-
-Esta doble revisión (mostrar y verificar) es lo que evita que en mapas grandes la explicación se "trabe" o muestre un estado distinto al del tablero.
-
-### 7.2 Qué cosas avisa el solver
-
-Cada vez que el solver hace algo importante, dispara un **evento**. Cada evento se traduce a una tarjeta en pantalla:
-
-| Evento | Lo que pasó en el solver | Cómo se ve en pantalla |
-|--------|--------------------------|------------------------|
-| `generar` | Empezó. Calculó cuántas formas tiene cada pista. | 🟪 Tarjeta inicial con el conteo total |
-| `cascada` | Una pista quedó con una sola opción posible. | 🟢 "Es la única que cabe" + rectángulo dibujado |
-| `celda` | Una casilla solo la puede tapar una pista, así que recortamos las opciones de esa pista. | 🟦 Casilla resaltada azul + opciones tachadas en rojo y sobrevivientes en verde |
-| `dp_pick` | DP eligió un candidato para una pista. | 🟣 "Pruebo esta forma" + rectángulo en la mini-grilla |
-| `backtrack` | Ningún candidato funcionó, hay que retroceder. | 🟥 Rectángulo borrado, dibujado en rojo punteado |
-| `forward_skip` | DP descartó un candidato anticipadamente porque dejaba a otra pista sin opciones. | ⚠️ Tarjeta breve (mostramos solo los primeros 30 para no saturar) |
-| `solucion` | Tablero completo. | ✅ Mini-grilla final con todos los rectángulos |
-| `contradiccion` | Puzzle imposible. | ❌ Tarjeta de cierre |
-| `sin_dp` | Las fases de propagación resolvieron todo, no hizo falta probar nada. | ⚡ Tarjeta de cierre rápido |
-
-### 7.3 Cómo se dibujan las mini-grillas
-
-Cada tarjeta lleva al lado un mini-tablero que muestra **el estado del puzzle en ese momento**: qué rectángulos ya están puestos, cuál se acaba de agregar, cuál se borró si fue un retroceso.
-
-Para esto, el explicador mantiene una pila interna de rectángulos. Cada `cascada` o `dp_pick` agrega uno; cada `backtrack` quita uno.
-
-**El bug que arreglamos**: cuando DP retrocede y prueba otra forma para la misma pista, el evento `dp_pick` aparece dos veces con la misma pista pero rectángulo distinto. Si simplemente apilábamos, una pista terminaba dibujada con dos rectángulos a la vez (el viejo y el nuevo, ambos del mismo color). Solución:
-
-> Si la pista ya está en la pila, **reemplazamos** su rectángulo. Si no, lo agregamos.
-
-Así la mini-grilla siempre refleja exactamente lo que el solver tiene en ese instante.
-
-### 7.4 La doble revisión (verificador + sintetizador)
-
-En mapas grandes el solver puede explorar miles de caminos. Si emitiéramos cada paso, la explicación quedaría incomprensible (o se cortaría a mitad y dejaría al usuario viendo un tablero a medio armar). Para evitarlo:
-
-**Primero — el verificador.** Cuando termina el trace, simulamos la misma lógica que usa la UI para armar la mini-grilla y revisamos que el estado final coincida exactamente con la solución que el jugador ve en el tablero. Si **no llega**, algo se cortó o se enredó.
-
-**Después — el sintetizador (plan B).** Si el verificador detecta que el trace está incompleto:
-
-1. **Conservamos lo confiable**: los pasos de preprocesamiento (cascada y casillas obligadas) son rápidos y siempre cierran bien, así que se mantienen tal cual.
-2. **Reemplazamos la parte enredada**: en lugar de mostrar las miles de pruebas y retrocesos de DP, dibujamos directamente cada pista pendiente con el rectángulo que sabemos correcto (el de la solución real).
-3. **Avisamos al usuario** con un banner ámbar arriba del paso a paso explicando que se reconstruyó la parte final.
-
-> **Garantía**: la mini-grilla del explicador siempre llega al mismo estado que el tablero jugable. Nunca se queda en bucle ni muestra algo inconsistente.
-
-### 7.5 Por qué hay límites (caps)
-
-Para que la pantalla no se ahogue ni se trabe, hay tres techos:
-
-| Tope | Valor | Por qué existe |
-|------|-------|----------------|
-| Total de eventos | 8000 | Más que esto satura el navegador. Suficiente para mapas medianos. |
-| Pruebas + retrocesos de DP | 800 | Si DP pasa de aquí, claramente está explorando demasiado: activamos el sintetizador en vez de mostrar caos. |
-| Descartes anticipados (`forward_skip`) | 30 | Son repetitivos. Mostrar más no aporta. |
-| Eventos de cierre | ∞ | `solucion`, `contradiccion` y `sin_dp` **siempre** entran, aunque el cap esté lleno, para que el usuario nunca vea un trace sin final. |
-
-### 7.6 El resto del modal
-
-Además del paso a paso, el modal tiene 6 secciones más, todas **colapsables** (chevron ▾ que rota al cerrar):
-
-- **🧠 Las 4 ideas clave** — un resumen visual de los pilares del algoritmo: DP, reglas de descarte, MRV, cascada con forward-check.
-- **📊 Resumen del puzzle** — tamaño, número de pistas, soluciones encontradas, tiempo total, nodos explorados, ramificación, y una estimación de dificultad calculada con `log₂` de las opciones.
-- **🗺️ Mapa visual** — el tablero pintado con un color por rectángulo y la pista resaltada con borde grueso.
-- **⚙️ Cómo funciona el algoritmo** — las 7 fases generales explicadas con los números reales de este puzzle (cuántos candidatos había, cuántos quedaron, cuánto tardó).
-- **📍 Cómo encontré esta solución** — el paso a paso (lo que describimos arriba).
-- **📋 Análisis por pista** — tabla con MRV: cada pista, sus factorizaciones, cuántos candidatos tenía, qué rectángulo terminó eligiendo y su área.
-
-Cada sección tiene un color de acento distinto en el borde superior para que se distingan a primera vista.
+- **Jugar**: niveles preconstruidos (1 a 5 dificultades × N niveles).
+- **Crear**: editor visual; el botón Verificar usa el solver para validar antes de jugar.
+- **Subir**: carga de mapas externos (JSON / texto) con la misma validación.
+- **Competir**: comparativa de tiempos solver-propio vs DLX sobre mapas guardados.
 
 ---
 
-## 8. Mapa de archivos
+## 6. Estructura del código
 
 ```
 shikaku/js/
-├── solver_propio.js     ← el algoritmo (5 fases)
-├── solver.worker.js     ← lo corre en un Web Worker
-├── generator.js         ← crea puzzles aleatorios con solución única
-├── board.js             ← UI del tablero
-├── ui.js                ← UI general (modales, export)
-├── maps.js              ← mapas preset (decorativos)
-├── constants.js         ← config de dificultades, colores, timeouts
-└── main.js              ← arranque
+├── solver_propio.js   ← algoritmo principal (5 fases)
+├── solver_dlx.js      ← verificador cruzado (DLX / Algorithm X)
+├── solver.worker.js   ← envuelve los solvers en Web Worker (SOLVE, VERIFY_DLX)
+├── generator.js       ← crea puzzles aleatorios con solución única
+├── board.js           ← canvas del tablero, interacción del jugador, zoom/pan
+├── ui.js              ← pantallas, modales, eventos, paso a paso visual
+├── maps.js            ← mapas preset decorativos
+├── constants.js       ← config de dificultades, colores, timeouts
+└── main.js            ← punto de entrada
 ```
 
+Dependencias:
+
+```
+main.js
+   └─ ui.js
+        ├─ board.js
+        ├─ generator.js ──── solver_propio.js
+        ├─ solver_propio.js
+        └─ solver.worker.js (en otro hilo)
+              ├─ solver_propio.js
+              └─ solver_dlx.js
+```
+
+---
+
+## 7. Resumen en una frase
+
+> **Tachar lo imposible, encadenar lo obligatorio, restringir por celdas, y probar lo poco que quede con paso atrás iterativo. DLX vigila.**
+
+---
+
+## 8. Resultados del benchmark (50 mapas)
+
+5 dificultades × 10 niveles. Solver con todas las fases activas, timeout 30 s:
+
+```
+D1 (4×4 – 5×5):     10/10  ·  total 1.15 ms   ·  máx 0.40 ms
+D2 (6×6 – 8×8):     10/10  ·  total 17 ms     ·  máx 13.8 ms
+D3 (9×9 – 14×14):   10/10  ·  total 398 ms    ·  máx 341 ms
+D4 (15×15 – 25×25): 10/10  ·  total 59.8 s    ·  máx 30 s
+D5 (26×26 – 40×40): 10/10  ·  total 30.8 s    ·  máx 30 s
+TOTAL:              50/50  ·  acumulado 91 s
+```
+
+Antes de agregar la fase 4 (celdas obligadas): **41/50** resueltos. Después: **50/50**.
+
+---
+
+## 9. Glosario rápido
+
+| Término          | Significado                                                                       |
+|------------------|-----------------------------------------------------------------------------------|
+| **Candidato**    | Un rectángulo posible para una pista (área, posición).                            |
+| **Cascada**      | Asignación forzada porque solo queda un candidato.                                |
+| **Forward-check**| Verificar que tras una decisión, todas las pistas siguen viables.                 |
+| **MRV**          | "Minimum Remaining Values": procesar primero las pistas con menos opciones.       |
+| **Backtrack**    | Deshacer la última decisión y probar la siguiente.                                |
+| **DLX**          | Algoritmo de cobertura exacta de Knuth — aquí solo para verificar.                |
+| **Trace**        | Secuencia de eventos que emite el solver, usada para pintar el paso a paso.       |
+| **Precomputo**   | Búsqueda silenciosa que arranca al entrar a un mapa difícil/experto.              |

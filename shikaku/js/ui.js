@@ -38,6 +38,7 @@ const state = {
   streamQueue: [],         // counts pendientes de pintar (stagger visible)
   streamTimer: null,       // setTimeout id para procesar streamQueue
   streamFinalTransition: null, // callback al drenar la cola de streaming
+  precomputeSession: null,     // { worker, result, isDone, lastProgress, listeners } para precomputar en D4/D5
 };
 
 // ══════════════════════════════════════════════════════════
@@ -778,6 +779,14 @@ function _showGameScreen(grid, clues, config) {
   _tryRestoreGameState();
   _startTimer();
   _bindGameEvents(config);
+
+  // En dificultades altas (Difícil/Experto) la búsqueda es lenta y la
+  // función `solve()` síncrona del hint bloquea el main thread. Lanzamos
+  // el solver en segundo plano apenas se entra al mapa: el botón Pista
+  // queda inhabilitado hasta que el solver termine, y si el usuario
+  // presiona Resolver durante el precómputo nos enganchamos a esa misma
+  // búsqueda en vez de spawnar otro worker.
+  if (config && config.id >= 4) _startPrecomputeSolve(config);
 }
 
 function _bindGameEvents(config) {
@@ -797,6 +806,10 @@ function _bindGameEvents(config) {
 
   document.getElementById('btn-restart').addEventListener('click', () => {
     if (state.activeBoard) {
+      _stopSolverSearch();
+      // Si era D4/D5, reiniciar el precómputo para que el botón Pista
+      // vuelva a estar listo cuando el solver termine sin tocar nada.
+      if (config && config.id >= 4) _startPrecomputeSolve(config);
       state.activeBoard.reset();
       state.timerSeconds = 0;
       _startTimer();
@@ -827,10 +840,20 @@ function _bindGameEvents(config) {
     const cols = grid[0].length;
     const board = state.activeBoard;
 
-    // Resolver para saber las respuestas correctas
-    const result = solve(grid, clues, 1, 5000);
-    if (!result.solutions || result.solutions.length === 0) return;
-    const solution = result.solutions[0];
+    // Resolver para saber las respuestas correctas. En D4/D5 hay un
+    // precómputo en segundo plano: si ya está listo, lo usamos sin volver
+    // a llamar al solver síncrono (que bloquearía el main thread y, en
+    // mapas grandes, podría no devolver nada en 5s y dejar al usuario
+    // sin pista).
+    let solution = null;
+    const pre = state.precomputeSession;
+    if (pre && pre.isDone && pre.result && pre.result.solutions && pre.result.solutions.length > 0) {
+      solution = pre.result.solutions[0];
+    } else {
+      const result = solve(grid, clues, 1, 5000);
+      if (!result.solutions || result.solutions.length === 0) return;
+      solution = result.solutions[0];
+    }
 
     // Crear mapa de clueIdx → solución para búsqueda correcta
     // (el array de solución NO está indexado por clueIdx)
@@ -939,8 +962,14 @@ async function _runSolver(config) {
   const btn = document.getElementById('btn-solve');
   const hintBtn = document.getElementById('btn-hint');
   btn.disabled = true;
-  hintBtn.style.pointerEvents = 'auto';
-  hintBtn.style.opacity = '1';
+  // En D4/D5, si el precómputo aún no terminó, NO habilitar Pista al
+  // arrancar Resolver — el botón debe seguir bloqueado hasta tener la
+  // solución. Solo se "abre" cuando el solver entrega un resultado.
+  const precomputeBusy = state.precomputeSession && !state.precomputeSession.isDone;
+  if (!precomputeBusy) {
+    hintBtn.style.pointerEvents = 'auto';
+    hintBtn.style.opacity = '1';
+  }
   btn.innerHTML = `<span class="spinner-inline"></span><span class="btn-text">Resolviendo...</span>`;
 
   const grid = state.currentGrid;
@@ -958,6 +987,42 @@ async function _runSolver(config) {
     if (sol) state.streamedSolutions.push(sol);
     _onProgressiveSolution(sol, count, config);
   };
+
+  // ¿Hay un precómputo corriendo o ya listo? Reutilizarlo en lugar de
+  // levantar otro worker — así no duplicamos trabajo y el usuario ve el
+  // progreso real de la búsqueda que ya venía corriendo en background.
+  const sess = state.precomputeSession;
+  if (sess) {
+    if (sess.isDone && sess.result) {
+      state.precomputeSession = null;
+      _onSolverDone(sess.result, config);
+      return;
+    }
+    if (sess.worker) {
+      sess.listeners.onProgress = (msg) => {
+        const nodes = msg.nodesExplored > 1e6
+          ? `${(msg.nodesExplored / 1e6).toFixed(1)}M`
+          : msg.nodesExplored > 1e3
+          ? `${(msg.nodesExplored / 1e3).toFixed(0)}K`
+          : msg.nodesExplored;
+        const b = document.getElementById('btn-solve');
+        if (b) b.querySelector('.btn-text').textContent = `Resolviendo... ${nodes} nodos`;
+      };
+      sess.listeners.onSolutionFound = (sol, count) => onSolutionFound(sol, count);
+      sess.listeners.onDone = (result) => {
+        state.precomputeSession = null;
+        _onSolverDone(result, config);
+      };
+      sess.listeners.onError = (err) => {
+        console.error('Error del solver:', err);
+        btn.disabled = false;
+        btn.innerHTML = `${ICONS.PLAY}<span class="btn-text">Resolver</span>`;
+      };
+      // Mostrar inmediatamente el último progreso conocido (si ya hubo).
+      if (sess.lastProgress) sess.listeners.onProgress(sess.lastProgress);
+      return;
+    }
+  }
 
   try {
     if (window.Worker) {
@@ -1086,6 +1151,104 @@ function _updateStreamingCount(count) {
   solNumEl.innerHTML =
     `${state.solutionIndex + 1}/${_SEARCHING_ICON} ` +
     `<small>(${count.toLocaleString()} ${_SEARCHING_ICON})</small>`;
+}
+
+/**
+ * Termina cualquier búsqueda en curso (solver principal + verifier DLX +
+ * precómputo en segundo plano) y deja el botón "Resolver" listo.
+ * Llamar al salir al menú o reiniciar nivel.
+ */
+function _stopSolverSearch() {
+  if (state.solverWorker) { try { state.solverWorker.terminate(); } catch {} state.solverWorker = null; }
+  if (state.verifyWorker) { try { state.verifyWorker.terminate(); } catch {} state.verifyWorker = null; }
+  if (state.precomputeSession && state.precomputeSession.worker) {
+    try { state.precomputeSession.worker.terminate(); } catch {}
+  }
+  state.precomputeSession = null;
+  const btn = document.getElementById('btn-solve');
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = `${ICONS.PLAY}<span class="btn-text">Resolver</span>`;
+  }
+}
+
+/**
+ * Lanza el solver en un Worker sin avisar al usuario, dejando el resultado
+ * disponible para cuando se necesite (botón Pista o botón Resolver). Si el
+ * usuario presiona Resolver mientras todavía está buscando, los listeners
+ * de progreso/soluciones se conectan en caliente para que vea los nodos
+ * explorándose y la solución progresiva — exactamente igual que si hubiera
+ * arrancado el solver él mismo.
+ */
+function _startPrecomputeSolve(config) {
+  const grid = state.currentGrid;
+  const clues = state.currentClues;
+  if (!grid || !clues) return;
+
+  // Si ya hay una sesión activa para este mismo puzzle, no duplicar.
+  if (state.precomputeSession) return;
+
+  const hintBtn = document.getElementById('btn-hint');
+  if (hintBtn) {
+    // .disabled basta: el CSS `.header-btn:disabled` ya aplica el mismo
+    // look "desactivado" que cualquier otro botón inactivo del header.
+    hintBtn.disabled = true;
+    // Quitar inline-styles que un _runSolver previo pudo haber dejado
+    // forzando "habilitado" (opacity:1, pointerEvents:auto).
+    hintBtn.style.pointerEvents = '';
+    hintBtn.style.opacity = '';
+    hintBtn.title = 'Preparando pista…';
+  }
+
+  const session = {
+    worker: null,
+    result: null,
+    isDone: false,
+    lastProgress: null,
+    listeners: { onProgress: null, onSolutionFound: null, onDone: null, onError: null },
+    config
+  };
+  state.precomputeSession = session;
+
+  const worker = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
+  session.worker = worker;
+
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === 'PROGRESS') {
+      session.lastProgress = msg;
+      if (session.listeners.onProgress) session.listeners.onProgress(msg);
+    } else if (msg.type === 'SOLUTION_FOUND') {
+      if (session.listeners.onSolutionFound) session.listeners.onSolutionFound(msg.solution, msg.count);
+    } else if (msg.type === 'DONE') {
+      session.isDone = true;
+      session.result = msg.result;
+      try { worker.terminate(); } catch {}
+      session.worker = null;
+      const hb = document.getElementById('btn-hint');
+      if (hb) { hb.disabled = false; hb.style.pointerEvents = ''; hb.style.opacity = ''; hb.title = ''; }
+      if (session.listeners.onDone) session.listeners.onDone(msg.result);
+    } else if (msg.type === 'ERROR') {
+      try { worker.terminate(); } catch {}
+      session.worker = null;
+      state.precomputeSession = null;
+      const hb = document.getElementById('btn-hint');
+      if (hb) { hb.disabled = false; hb.style.pointerEvents = ''; hb.style.opacity = ''; hb.title = ''; }
+      if (session.listeners.onError) session.listeners.onError(new Error(msg.error));
+    }
+  };
+  worker.onerror = () => {
+    try { worker.terminate(); } catch {}
+    session.worker = null;
+    state.precomputeSession = null;
+    const hb = document.getElementById('btn-hint');
+    if (hb) { hb.disabled = false; hb.style.pointerEvents = ''; hb.style.opacity = ''; hb.title = ''; }
+  };
+  worker.postMessage({
+    type: 'SOLVE', grid, clues,
+    maxSolutions: SOLVER_CONFIG.maxSolutions,
+    timeoutMs: SOLVER_CONFIG.workerTimeoutMs
+  });
 }
 
 function _solveInWorker(grid, clues, onSolutionFound) {
@@ -2286,6 +2449,11 @@ function _showStepBar(result, config) {
 function _onVictory(config) {
   state.gameInProgress = false;
   _stopTimer();
+  // Si quedaba un precómputo en background, ya no lo necesitamos.
+  if (state.precomputeSession && state.precomputeSession.worker) {
+    try { state.precomputeSession.worker.terminate(); } catch {}
+    state.precomputeSession = null;
+  }
 
   const totalClues = state.currentClues ? state.currentClues.length : 0;
   const stars = _calcStars(state.hintsUsed, totalClues, state.activeDifficulty);
@@ -2358,6 +2526,7 @@ function _goHome() {
   _stopTimer();
   _stopAutoPlay();
   _flushStreamQueue();
+  _stopSolverSearch();
   if (state.activeBoard) { state.activeBoard.destroy(); state.activeBoard = null; }
   state.gameInProgress = false;
   state.currentScreen = 'home';
