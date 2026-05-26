@@ -2,5 +2,14 @@
   "name": "shikaku",
   "version": "1.0.0",
   "type": "module",
-  "description": "Shikaku puzzle game"
+  "description": "Shikaku puzzle game",
+  "scripts": {
+    "start": "serve shikaku -l tcp://0.0.0.0:${PORT:-8080} --no-clipboard --single"
+  },
+  "dependencies": {
+    "serve": "^14.2.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
